@@ -1,0 +1,532 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 16: Exploring and Method Swizzling Objective-C Frameworks</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 16: Exploring and Method Swizzling Objective-C Frameworks</h1>
+
+<p>In the previous two chapters, you&apos;ve explored dynamic loading as well as how to use the <code>dlopen</code> and <code>dlsym</code> functions. So long as you knew the name of the function, it didn’t matter if the compiler tried to hide a function from you.
+</p>
+<p>You’ll cap off this round of dynamic framework exploration by digging into Objective-C frameworks using the Objective-C runtime to hook and execute methods of interest.
+</p>
+<p>For this chapter, you&apos;ll go after a series of private UIKit classes that help aid in visual debugging. The chief of these private classes, <em>UIDebuggingInformationOverlay</em> was introduced in iOS 9.0 and has received widespread attention in May 2017, thanks to an article <a href="http://ryanipete.com/blog/ios/swift/objective-c/uidebugginginformationoverlay/">http://ryanipete.com/blog/ios/swift/objective-c/uidebugginginformationoverlay/</a> highlighting these classes and usage.
+</p>
+<p>Unfortunately, as of iOS 11, Apple caught wind of developers accessing this class (likely through the popularity of the above article) and has added several checks to ensure that only internal apps that link to UIKit have access to these private debugging classes.
+</p>
+<p>You’ll explore <code>UIDebuggingInformationOverlay</code> and learn why this class fails to work in iOS 11, as well as explore avenues to get around these checks imposed by Apple by writing to specific areas in memory first through LLDB. Then, you&apos;ll learn alternative tactics you can use to enable <code>UIDebuggingInformationOverlay</code> through Objective-C&apos;s method swizzling.
+</p>
+<p>I specifically require you to use an iOS 11 Simulator for this chapter as Apple can impose new checks on these classes in the future where I have no intention to &quot;up the ante&quot; when they make this class harder to use or remove it from release UIKit builds altogether.
+</p>
+<h2 class="segment-chapter">Between iOS 10 and 11</h2>
+
+<p>In iOS 9 &amp; 10, setting up and displaying the overlay was rather trivial. In both these iOS versions, the following LLDB commands were all that was needed:
+</p><pre class="code-block">(lldb) po [UIDebuggingInformationOverlay prepareDebuggingOverlay]
+(lldb) po [[UIDebuggingInformationOverlay overlay] toggleVisibility]</pre>
+<p>This would produce the following overlay:
+</p><div class="image-25"><img src="graphics/img84.png"  alt="" title="" /></div>
+<p>If you have an iOS 10 Simulator on your computer, I&apos;d recommend you attach to any iOS process and try the above LLDB commands out so you know what is expected.
+</p>
+<p>Unfortunately, some things changed in iOS 11. Executing the exact same LLDB commands in iOS 11 will produce nothing.
+</p>
+<p>To understand what&apos;s happening, you need to explore the overriden methods <code>UIDebuggingInformationOverlay</code> contains and wade into the assembly.
+</p>
+<p>Use LLDB to attach to <i>any</i> iOS 11.x Simulator process, this can <code>MobileSafari</code>, <code>SpringBoard</code>, any of the apps you&apos;ve explored in the previous chapters, or your own work. It doesn&apos;t matter if it&apos;s your own app or not, as you will be exploring assembly in the UIKit module.
+</p>
+<p>For this example, I&apos;ll launch the <em>Photos</em> application in the Simulator. Head on over to Terminal, then type the following:
+</p><pre class="code-block">(lldb) lldb -n MobileSlideShow</pre>
+<p>Once you&apos;ve attached to any iOS Simulator process, use LLDB to search for any overriden methods by the <code>UIDebuggingInformationOverlay</code> class.
+</p>
+<p>You can use the <code>image lookup</code> LLDB command:
+</p><pre class="code-block">(lldb) image lookup -rn UIDebuggingInformationOverlay</pre>
+<p>Or alternatively, use the <em>methods</em> command you created in Chapter 14, “Dynamic Frameworks”:
+</p><pre class="code-block">(lldb) methods UIDebuggingInformationOverlay</pre>
+<p>If you decided to skip that chapter, the following command would be equivalent:
+</p><pre class="code-block">(lldb) exp -lobjc -O -- [UIDebuggingInformationOverlay _shortMethodDescription]</pre>
+<p>Take note of the overridden <code>init</code> instance method found in the output of either command.
+</p>
+<p>You&apos;ll need to explore what this <code>init</code> is doing. You can follow along with LLDB&apos;s <code>disassemble</code> command, but for visual clarity, I&apos;ll use my own custom LLDB disassembler, <em>dd</em>, which outputs in color and is available here: <a href="https://github.com/DerekSelander/lldb">https://github.com/DerekSelander/lldb</a>.
+</p>
+<p>Here&apos;s the <code>init</code> method&apos;s assembly in iOS 10. If you want to follow along in black &amp; white in LLDB, type:
+</p><pre class="code-block">(lldb) disassemble -n &quot;-[UIDebuggingInformationOverlay init]&quot;</pre><div class="image-90"><img src="graphics/img85.png"  alt="" title="" /></div>
+<p>Again, this is showing the assembly of this method in iOS 10.
+</p>
+<p>Colors (and <code>dd</code>&apos;s comments marked in green) make reading x64 assembly soooooooooooo much easier. In pseudo-Objective-C code, this translates to the following:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">@implementation</span> <span class="hljs-title">UIDebuggingInformationOverlay</span></span>
+
+- (<span class="hljs-keyword">instancetype</span>)init {
+  <span class="hljs-keyword">if</span> (<span class="hljs-keyword">self</span> = [<span class="hljs-keyword">super</span> init]) {
+    [<span class="hljs-keyword">self</span> _setWindowControlsStatusBarOrientation:<span class="hljs-literal">NO</span>];
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">self</span>;
+}
+
+<span class="hljs-keyword">@end</span></pre>
+<p>Nice and simple for iOS 10. Let&apos;s look at the same method for iOS 11:
+</p><div class="image-90"><img src="graphics/img86.png"  alt="" title="" /></div>
+<p>This roughly translates to the following:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">@implementation</span> <span class="hljs-title">UIDebuggingInformationOverlay</span></span>
+
+- (<span class="hljs-keyword">instancetype</span>)init {
+  <span class="hljs-keyword">static</span> <span class="hljs-built_in">BOOL</span> overlayEnabled = <span class="hljs-literal">NO</span>;
+  <span class="hljs-keyword">static</span> <span class="hljs-built_in">dispatch_once_t</span> onceToken;
+  <span class="hljs-built_in">dispatch_once</span>(&amp;onceToken, ^{
+    overlayEnabled = <span class="hljs-built_in">UIDebuggingOverlayIsEnabled</span>();
+  });
+  <span class="hljs-keyword">if</span> (!overlayEnabled) { 
+    <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>;
+  }
+
+  <span class="hljs-keyword">if</span> (<span class="hljs-keyword">self</span> = [<span class="hljs-keyword">super</span> init]) {
+    [<span class="hljs-keyword">self</span> _setWindowControlsStatusBarOrientation:<span class="hljs-literal">NO</span>];
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">self</span>;
+}
+
+<span class="hljs-keyword">@end</span></pre>
+<p>There are checks enforced in iOS 11 thanks to <em>UIDebuggingOverlayIsEnabled()</em> to return <code>nil</code> if this code is not an internal Apple device.
+</p>
+<p>You can verify these disappointing precautions yourself by typing the following in LLDB on a iOS 11 Simulator:
+</p><pre class="code-block">(lldb) po [UIDebuggingInformationOverlay new]</pre>
+<p>This is a shorthand way of <code>alloc</code>/<code>init</code>&apos;ing an <code>UIDebuggingInformationOverlay</code>. You&apos;ll get <code>nil</code>.
+</p>
+<p>With LLDB, disassemble the first 10 lines of assembly for <code>-[UIDebuggingInformationOverlay init]</code>:
+</p><pre class="code-block">(lldb) disassemble -n &quot;-[UIDebuggingInformationOverlay init]&quot; -c10</pre>
+<p>Your assembly won&apos;t be color coded, but this is a small enough chunk to understand what&apos;s going on.
+</p>
+<p>Your output will look similar to:
+</p><pre class="code-block">UIKit`-[UIDebuggingInformationOverlay init]:
+  0x10d80023e &lt;+0&gt;:  push   rbp
+  0x10d80023f &lt;+1&gt;:  mov    rbp, rsp
+  0x10d800242 &lt;+4&gt;:  push   r14
+  0x10d800244 &lt;+6&gt;:  push   rbx
+  0x10d800245 &lt;+7&gt;:  sub    rsp, 0x10
+  0x10d800249 &lt;+11&gt;: mov    rbx, rdi
+  0x10d80024c &lt;+14&gt;: cmp    qword ptr [rip + 0x9fae84], -0x1 
+    ; UIDebuggingOverlayIsEnabled.__overlayIsEnabled + 7
+
+  0x10d800254 &lt;+22&gt;: jne    0x10d8002c0               ; &lt;+130&gt;
+  0x10d800256 &lt;+24&gt;: cmp    byte ptr [rip + 0x9fae73], 0x0 
+    ; mainHandler.onceToken + 7
+
+  0x10d80025d &lt;+31&gt;: je     0x10d8002a8               ; &lt;+106&gt;</pre>
+<p>Pay close attention to offset 14 and 22:
+</p><pre class="code-block">  0x10d80024c &lt;+14&gt;: cmp    qword ptr [rip + 0x9fae84], -0x1 
+    ; UIDebuggingOverlayIsEnabled.__overlayIsEnabled + 7
+
+  0x10d800254 &lt;+22&gt;: jne    0x10d8002c0               ; &lt;+130&gt;</pre>
+<p>Thankfully, Apple includes the DWARF debugging information with their frameworks, so we can see what symbols they are using to access certain memory addresses.
+</p>
+<p>Take note of the <em>UIDebuggingOverlayIsEnabled.</em><em>__</em><em>overlayIsEnabled + 7</em> comment in the disassembly. I actually find it rather annoying that LLDB does this and would consider this a bug. Instead of correctly referencing a symbol in memory, LLDB will reference the previous value in its comments and add a <code>+ 7</code>. The value at <code>UIDebuggingOverlayIsEnabled.__overlayIsEnabled + 7</code> is what we want, but the comment is not helpful, because it has the name of the wrong symbol in its disassembly. This is why I often choose to use my <code>dd</code> command over LLDB’s, since I check for this off-by one error and replace it with my own comment.
+</p>
+<p>But regardless of the incorrect name LLDB is choosing in its comments, this address is being compared to <code>-1</code> (aka <code>0xffffffffffffffff</code> in a 64-bit process) and jumps to a specific address if this address doesn&apos;t contain <code>-1</code>. Oh... and now that we&apos;re on the subject, <code><em>dispatch_once_t</em></code> variables start out as 0 (as they are likely <code>static</code>) and get set to <code>-1</code> once a <code><em>dispatch_once</em></code> block completes (hint, hint).
+</p>
+<p>Yes, this first check in memory is seeing if code should be executed in a <code>dispatch_once</code> block. You want the <code>dispatch_once</code> logic to be skipped, so you&apos;ll set this value in memory to <code>-1</code>.
+</p>
+<p>From the assembly above, you have two options to obtain the memory address of interest:
+</p>
+<ol>
+<li>
+<p>You can combine the <code>RIP</code> instruction pointer with the offset to get the load address. In my assembly, I can see this address is located at <code><em>[rip + 0x9fae84]</em></code>. Remember, the <code>RIP</code> register will resolve to the next row of assembly since the program counter increments, then executes an instruction.
+</p></li>
+</ol>
+
+<p>This means that <code>[rip + 0x9fae84]</code> will resolve to <code>[0x10d800254 + 0x9fae84]</code> in my case. This will then resolve to <em>0x000000010e1fb0d8</em>, the memory address guarding the overlay from being initialized.
+</p>
+<ol>
+<li>
+<p>You can use LLDB&apos;s <code>image lookup</code> command with the <code>verbose</code> and <code>symbol</code> option to find the load address for <code>UIDebuggingOverlayIsEnabled.__overlayIsEnabled</code>.
+</p></li>
+</ol>
+<pre class="code-block">(lldb) image lookup -vs UIDebuggingOverlayIsEnabled.__overlayIsEnabled</pre>
+<p>From the output, look for the <em>range</em> field for the <em>end address</em>. Again, this is due to LLDB not giving you the correct symbol. For my process, I got <code>range = [0x000000010e1fb0d0-0x000000010e1fb0d8)</code>. This means the byte of interest for me is located at: <code>0x000000010e1fb0d8</code>. If I wanted to know the symbol this address is <i>actually</i> referring to, I can type:
+</p><pre class="code-block">(lldb) image lookup -a 0x000000010e1fb0d8</pre>
+<p>Which will then output:
+</p><pre class="code-block">Address: UIKit[0x00000000015b00d8] (UIKit.__DATA.__bss + 24824)
+Summary: UIKit`UIDebuggingOverlayIsEnabled.onceToken</pre>
+<p>This <code>UIDebuggingOverlayIsEnabled.onceToken</code> is the correct name of the symbol you want to go after.
+</p>
+<h3 class="segment-chapter">Bypassing checks by changing memory</h3>
+
+<p>We now know the <i>exact</i> bytes where this Boolean check occurs.
+</p>
+<p>Let&apos;s first see what value this has:
+</p><pre class="code-block">(lldb) x/gx 0x000000010e1fb0d8</pre>
+<p>This will dump out 8 bytes in hex located at 0x000000010e1fb0d8 (your address will be different). If you&apos;ve executed the <code>po [UIDebuggingInformationOverlay new]</code> command earlier, you&apos;ll see -1; if you haven&apos;t, you&apos;ll see 0.
+</p>
+<p>Let&apos;s change this. In LLDB type:
+</p><pre class="code-block">(lldb) mem write 0x000000010e1fb0d8 0xffffffffffffffff -s 8</pre>
+<p>The <code>-s</code> option specifies the amount of bytes to write to. If typing out 16 f&apos;s is unappealing to you, there&apos;s always alternatives to complete the same task. For example, the following would be equivalent:
+</p><pre class="code-block">(lldb) po *(long *)0x000000010e1fb0d0 = -1</pre>
+<p>You can of course verify your work be just examining the memory again.
+</p><pre class="code-block">(lldb) x/gx 0x000000010e1fb0d8</pre>
+<p>The output should be <code>0xffffffffffffffff</code> now.
+</p>
+<h3 class="segment-chapter">Your turn</h3>
+
+<p>I just showed you how to knock out the initial check for <code>UIDebuggingOverlayIsEnabled.onceToken</code> to make the <code>dispatch_once</code> block think it has already run, but there&apos;s one more check that will hinder your process.
+</p>
+<p>Re-run the <code>disassemble</code> command you typed earlier:
+</p><pre class="code-block">(lldb) disassemble -n &quot;-[UIDebuggingInformationOverlay init]&quot; -c10</pre>
+<p>At the very bottom of output are these two lines:
+</p><pre class="code-block">0x10d800256 &lt;+24&gt;: cmp    byte ptr [rip + 0x9fae73], 0x0 
+    ; mainHandler.onceToken + 7
+0x10d80025d &lt;+31&gt;: je     0x10d8002a8               ; &lt;+106&gt;</pre>
+<p>This <code>mainHandler.onceToken</code> is again, <em>the wrong symbol</em>; you care about the symbol immediately following it in memory. I want you to perform the same actions you did on <code>UIDebuggingOverlayIsEnabled.__overlayIsEnabled</code>, but instead apply it to the memory address pointed to by the <code>mainHandler.onceToken</code> symbol. Once you perform the RIP arithmetic, referencing <code>mainHandler.onceToken</code>, you&apos;ll realize the correct symbol, <code><em>UIDebuggingOverlayIsEnabled.__overlayIsEnabled</em></code>, is the symbol you are after.
+</p>
+<p>You first need to the find the location of <code>mainHandler.onceToken</code> in memory. You can either perform the <code>RIP</code> arithmetic from the above assembly or use <code>image lookup -vs mainHandler.onceToken</code> to find the end location. Once you found the memory address, write a <code>-1</code> value into this memory address.
+</p>
+<h3 class="segment-chapter">Verifying your work</h3>
+
+<p>Now that you&apos;ve successfully written a <code>-1</code> value to <code>mainHandler.onceToken</code>, it&apos;s time to check your work to see if any changes you&apos;ve made have bypassed the initialization checks.
+</p>
+<p>In LLDB type:
+</p><pre class="code-block">(lldb) po [UIDebuggingInformationOverlay new]</pre>
+<p>Provided you correctly augmented the memory, you&apos;ll be greeted with some more cheery output:
+</p><pre class="code-block">&lt;UIDebuggingInformationOverlay: 0x7fb622107860; frame = (0 0; 768 1024); hidden = YES; gestureRecognizers = &lt;NSArray: 0x60400005aac0&gt;; layer = &lt;UIWindowLayer: 0x6040000298a0&gt;&gt;</pre>
+<p>And while you&apos;re at it, make sure the class method <em>overlay</em> returns a valid instance:
+</p><pre class="code-block">(lldb) po [UIDebuggingInformationOverlay overlay]</pre>
+<p>If you got <code>nil</code> for either of the above LLDB commands, make sure you have augmented the correct addresses in memory. If you&apos;re absolutely sure you have augmented the correct addresses and you still get a <code>nil</code> return value, make sure you&apos;re running either the iOS 11.0-11.1 Simulator as Apple could have added additional checks to prevent this from working in a version since this book was written!
+</p>
+<p>If all goes well, and you have a valid instance, let&apos;s put this thing on the screen!
+</p>
+<p>In LLDB, type:
+</p><pre class="code-block">(lldb) po [[UIDebuggingInformationOverlay overlay] toggleVisibility]</pre>
+<p>Then resume the process:
+</p><pre class="code-block">(lldb) continue</pre>
+<p>Alright... we got something on the screen, but it&apos;s blank!?
+</p><div class="image-40"><img src="graphics/img87.png"  alt="" title="" /></div>
+<h2 class="segment-chapter">Sidestepping checks in prepareDebuggingOverlay</h2>
+
+<p>The <code>UIDebuggingInformationOverlay</code> is blank because we didn&apos;t call the class method, <code><em>+[UIDebuggingInformationOverlay prepareDebuggingOverlay]</em></code>
+</p>
+<p>Dumping the assembly for this method, we can see one concerning check immediately:
+</p><div class="image-90"><img src="graphics/img88.png"  alt="" title="" /></div>
+<p>Offsets 14, 19, and 21. Call a function named <code>_UIGetDebuggingOverlayEnabled</code> test if <code>AL</code> (<code>RAX</code>&apos;s single byte cousin) is 0. If yes, jump to the end of this function. The logic in this function is gated by the return value of <code>_UIGetDebuggingOverlayEnabled</code>.
+</p>
+<p>Since we are still using LLDB to build a POC, let&apos;s set a breakpoint on this function, step out of <code>_UIGetDebuggingOverlayEnabled</code>, then augment the value stored in the AL register <i>before</i> the check in offset 19 occurs.
+</p>
+<p>Create a breakpoint on <code>_UIGetDebuggingOverlayEnabled</code>:
+</p><pre class="code-block">(lldb) b _UIGetDebuggingOverlayEnabled</pre>
+<p>LLDB will indicate that it&apos;s successfully created a breakpoint on the <code>_UIGetDebuggingOverlayEnabled</code> method.
+</p>
+<p>Now, let&apos;s execute the <code>[UIDebuggingInformationOverlay prepareDebuggingOverlay]</code> method, but have LLDB honor breakpoints. Type the following:
+</p><pre class="code-block">(lldb) exp -i0 -O -- [UIDebuggingInformationOverlay prepareDebuggingOverlay]</pre>
+<p>This uses the <code>-i</code> option that determines if LLDB should ignore breakpoints. You&apos;re specifying 0 to say that LLDB shouldn&apos;t ignore any breakpoints.
+</p>
+<p>Provided all went well, execution will start in the <code>prepareDebuggingOverlay</code> method and call out to the <code>_UIGetDebuggingOverlayEnabled</code> where execution will stop.
+</p>
+<p>Let&apos;s just tell LLDB to resume execution until it steps out of this <code>_UIGetDebuggingOverlayEnabled</code> function:
+</p><pre class="code-block">(lldb) finish</pre>
+<p>Control flow will finish up in <code>_UIGetDebuggingOverlayEnabled</code> and we&apos;ll be back in the <code>prepareDebuggingOverlay</code> method, right before the test of the AL register on offset 19:
+</p><pre class="code-block">UIKit`+[UIDebuggingInformationOverlay prepareDebuggingOverlay]:
+    0x11191a312 &lt;+0&gt;:   push   rbp
+    0x11191a313 &lt;+1&gt;:   mov    rbp, rsp
+    0x11191a316 &lt;+4&gt;:   push   r15
+    0x11191a318 &lt;+6&gt;:   push   r14
+    0x11191a31a &lt;+8&gt;:   push   r13
+    0x11191a31c &lt;+10&gt;:  push   r12
+    0x11191a31e &lt;+12&gt;:  push   rbx
+    0x11191a31f &lt;+13&gt;:  push   rax
+    0x11191a320 &lt;+14&gt;:  call   0x11191b2bf               
+          ; _UIGetDebuggingOverlayEnabled
+
+-&gt;  0x11191a325 &lt;+19&gt;:  test   al, al
+    0x11191a327 &lt;+21&gt;:  je     0x11191a430               ; &lt;+286&gt;
+    0x11191a32d &lt;+27&gt;:  lea    rax, [rip + 0x9fc19c]     ; UIApp</pre>
+<p>Through LLDB, print out the value in the AL register:
+</p><pre class="code-block">(lldb) p/x $al</pre>
+<p>Unless you work at a specific fruit company inside a fancy new “spaceship” campus, you&apos;ll likely get <code>0x00</code>.
+</p>
+<p>Change this around to <code>0xff</code>:
+</p><pre class="code-block">(lldb) po $al = 0xff</pre>
+<p>Let&apos;s verify this worked by single instruction stepping:
+</p><pre class="code-block">(lldb) si</pre>
+<p>This will get you onto the following line:
+</p><pre class="code-block"> je     0x11191a430               ; &lt;+286&gt;</pre>
+<p>If <code>AL</code> was <code>0x0</code> at the time of the <code>test</code> assembly instruction, this will move you to offset 286. If <code>AL</code> wasn&apos;t <code>0x0</code> at the time of the <code>test</code> instruction, you&apos;ll keep on executing without the conditional <code>jmp</code> instruction.
+</p>
+<p>Make sure this succeeded by performing one more instruction step.
+</p><pre class="code-block">(lldb) si</pre>
+<p>If you&apos;re on offset 286, this has failed and you&apos;ll need to repeat the process. However, if you find the instruction pointer has not conditionally jumped, then this has worked!
+</p>
+<p>There&apos;s nothing more you need to do now, so resume execution in LLDB:
+</p><pre class="code-block">(lldb) continue</pre>
+<p>So, what did the logic do exactly in <code>+[UIDebuggingInformationOverlay prepareDebuggingOverlay]</code>?
+</p>
+<p>To help ease the visual burden, here is a rough translation of what the <code>+[UIDebuggingInformationOverlay prepareDebuggingOverlay]</code> method is doing:
+</p><pre class="code-block">+ (<span class="hljs-keyword">void</span>)prepareDebuggingOverlay {
+  <span class="hljs-keyword">if</span> (_UIGetDebuggingOverlayEnabled()) {
+    <span class="hljs-keyword">id</span> handler = [<span class="hljs-built_in">UIDebuggingInformationOverlayInvokeGestureHandler</span> mainHandler];
+    <span class="hljs-built_in">UITapGestureRecognizer</span> *tapGesture = [[<span class="hljs-built_in">UITapGestureRecognizer</span> alloc] initWithTarget:handler action:<span class="hljs-keyword">@selector</span>(_handleActivationGesture:)];
+    [tapGesture setNumberOfTouchesRequired:<span class="hljs-number">2</span>];
+    [tapGesture setNumberOfTapsRequired:<span class="hljs-number">1</span>];
+    [tapGesture setDelegate:handler];
+    
+    <span class="hljs-built_in">UIView</span> *statusBarWindow = [<span class="hljs-built_in">UIApp</span> statusBarWindow];
+    [statusBarWindow addGestureRecognizer:tapGesture];
+  }
+}</pre>
+<p>This is interesting: There is logic to handle a two finger tap on UIApp&apos;s <code>statusBarWindow</code>. Once that happens, a method called <code>_handleActivationGesture:</code> will be executed on a <code>UIDebuggingInformationOverlayInvokeGestureHandler</code> singleton, <code>mainHandler</code>.
+</p>
+<p>That makes you wonder what&apos;s the logic in <code><em>-[UIDebuggingInformationOverlayInvokeGestureHandler _handleActivationGesture:]</em></code> is for?
+</p>
+<p>A quick assembly dump using <code>dd</code> brings up an interesting area:
+</p><div class="image-90"><img src="graphics/img89.png"  alt="" title="" /></div>
+<p>The <code>UITapGestureRecognizer</code> instance passed in by the <code>RDI</code> register (which you learned about in Chapter 10, “Assembly Register Calling Convention”), is getting the <code>state</code> compared to the value <code>0x3</code> (see offset 30). If it is 3, then control continues, while if it&apos;s not 3, control jumps towards the end of the function.
+</p>
+<p>A quick lookup in the header file for <code>UIGestureRecognizer</code>, tells us the state has the following enum values:
+</p><pre class="code-block"><span class="hljs-keyword">typedef</span> <span class="hljs-built_in">NS_ENUM</span>(<span class="hljs-built_in">NSInteger</span>, <span class="hljs-built_in">UIGestureRecognizerState</span>) {
+    <span class="hljs-built_in">UIGestureRecognizerStatePossible</span>,
+    <span class="hljs-built_in">UIGestureRecognizerStateBegan</span>,    
+    <span class="hljs-built_in">UIGestureRecognizerStateChanged</span>,   
+    <span class="hljs-built_in">UIGestureRecognizerStateEnded</span>,      
+    <span class="hljs-built_in">UIGestureRecognizerStateCancelled</span>,  
+    <span class="hljs-built_in">UIGestureRecognizerStateFailed</span>,     
+    <span class="hljs-built_in">UIGestureRecognizerStateRecognized</span> = <span class="hljs-built_in">UIGestureRecognizerStateEnded</span> 
+};</pre>
+<p>Counting from 0, we can see control will only execute the bulk of the code if the <code>UITapGestureRecognizer</code>&apos;s <code>state</code> is equal to <em>UIGestureRecognizerStateEnded</em>.
+</p>
+<p>So what does this mean exactly? Not only did UIKit developers put restrictions on accessing the <code>UIDebuggingInformationOverlay</code> class (which you&apos;ve already modified in memory), they&apos;ve also added a “secret” <code>UITapGestureRecognizer</code> to the status bar window that executes the setup logic only when you complete a two finger tap on it.
+</p>
+<p>How cool is that?
+</p>
+<h3 class="segment-chapter">So, recapping...</h3>
+
+<p>Before we try this thing out, let&apos;s quickly recap what you did just in case you need to restart fresh:
+</p>
+<p>You found the memory address of <code><em>UIDebuggingOverlayIsEnabled.onceToken</em></code>:
+</p><pre class="code-block">(lldb) image lookup -vs UIDebuggingOverlayIsEnabled.onceToken</pre>
+<p>And then set it to <code>-1</code> via LLDB&apos;s <code>memory write</code> or just casting the address to a <code>long</code> pointer and setting the value to <code>-1</code> like so:
+</p><pre class="code-block">(lldb) po *(long *)0x000000010e1fb0d0 = -1</pre>
+<p>You also performed the same action for <code><em>UIDebuggingOverlayIsEnabled.__overlayIsEnabled</em></code>.
+</p>
+<p>You then created a breakpoint on <code><em>_UIGetDebuggingOverlayEnabled()</em></code>, executed the <code><em>+[UIDebuggingInformationOverlay prepareDebuggingOverlay]</em></code> command and changed the return value that <code>_UIGetDebuggingOverlayEnabled()</code> produced so the rest of the method could continue to execute.
+</p>
+<p>This was one of the many ways to bypass Apple&apos;s new iOS 11 checks to prevent you from using these classes.
+</p>
+<h3 class="segment-chapter">Trying this out</h3>
+
+<p>Since you&apos;re using the Simulator, this means you need to hold down <em>Option</em> on the keyboard to simulate two touches. Once you get the two touches parallel, hold down the <em>Shift</em> key to drag the tap circles around the screen. Position the tap circles on the status bar of your application, and then click.
+</p><div class="image-95"><img src="graphics/img90.png"  alt="" title="" /></div>
+<p>You&apos;ll be greeted with the fully functional <code>UIDebuggingInformationOverlay</code>!
+</p>
+<h2 class="segment-chapter">Introducing Method Swizzling</h2>
+
+<p>Reflecting, how long did that take? In addition, we have to manually set this through LLDB everytime UIKit gets loaded into a process. Finding and setting these values in memory can definitely be done through a custom LLDB script, but there&apos;s an elegant alternative using Objective-C&apos;s <em>method swizzling</em>.
+</p>
+<p>But before diving into how, let&apos;s talk about the what.
+</p>
+<p>Method swizzling is the process of dynamically changing what an Objective-C method does at runtime. Compiled code in the <code>__TEXT</code> section of a binary <i>can’t</i> be modified (well, it <i>can</i> with the proper entitlements that Apple will not give you, but we won&apos;t get into that). However, when executing Objective-C code, we know <code>objc_msgSend</code> comes into play thanks to Chapter 10. In case you forgot, <code>objc_msgSend</code> will take an instance (or class), a Selector and a variable number of arguments and jump to the location of the function.
+</p>
+<p>Method swizzling has many uses, but oftentimes people use this tactic to modify a parameter or return value. Alternatively, they can snoop and see when a function is executing code without searching for references in assembly. In fact, Apple even (precariously) uses method swizzling in it&apos;s own codebase like KVO!
+</p>
+<p>Since the internet is full of great references on method swizzling, I won&apos;t start at square one (but if you want to, I&apos;d say <a href="http://nshipster.com/method-swizzling/">http://nshipster.com/method-swizzling/</a> has the clearest and cleanest discussion of it). Instead, we&apos;ll start with the basic example, then quickly ramp up to something I haven&apos;t seen anyone do with method swizzling: use it to jump into an offset of a method to avoid any unwanted checks!
+</p>
+<h3 class="segment-chapter">Finally onto a sample project</h3>
+
+<p>Included in this chapter is an sample project called <em>Overlay</em> and it&apos;s quite minimal. It only has a <code>UIButton</code> smack in the middle that executes the expected logic to display the <code>UIDebuggingInformationOverlay</code>.
+</p><div class="image-25"><img src="graphics/img91.png"  alt="" title="" /></div>
+<p>You&apos;ll build an Objective-C <code>NSObject</code> category to perform the Objective-C swizzling on the code of interest as soon as the module loads, using the Objective-C-only <em>load</em> class method.
+</p>
+<p>Build and run the project. Tap on the lovely <code>UIButton</code>. You&apos;ll only get some angry output from <code>stderr</code> saying:
+</p><pre class="code-block">UIDebuggingInformationOverlay &apos;overlay&apos; method returned nil</pre>
+<p>As you already know, this is because of the short-circuited overriden <code>init</code> method for <code>UIDebuggingInformationOverlay</code>.
+</p>
+<p>Let&apos;s knock out this easy swizzle first; open <em>NSObject+UIDebuggingInformationOverlayInjector.m</em>. Jump to Section 1, marked by a <em>pragma</em>. In this section, add the following Objective-C class:
+</p><pre class="code-block"><span class="hljs-comment">//****************************************************/</span>
+<span class="hljs-meta">#pragma mark - Section 1 - FakeWindowClass</span>
+<span class="hljs-comment">//****************************************************/</span>
+
+<span class="hljs-class"><span class="hljs-keyword">@interface</span> <span class="hljs-title">FakeWindowClass</span> : <span class="hljs-title">UIWindow</span></span>
+<span class="hljs-keyword">@end</span>
+
+<span class="hljs-class"><span class="hljs-keyword">@implementation</span> <span class="hljs-title">FakeWindowClass</span></span>
+
+- (<span class="hljs-keyword">instancetype</span>)initSwizzled
+{
+  <span class="hljs-keyword">if</span> (<span class="hljs-keyword">self</span>= [<span class="hljs-keyword">super</span> init]) {
+    [<span class="hljs-keyword">self</span> _setWindowControlsStatusBarOrientation:<span class="hljs-literal">NO</span>];
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">self</span>;
+}
+
+<span class="hljs-keyword">@end</span></pre>
+<p>For this part, you declared an Objective-C class named <code>FakeWindowClass</code>, which is a subclass of a <code>UIWindow</code>. Unfortunately, this code will not compile since <code>_setWindowControlsStatusBarOrientation:</code> is a private method.
+</p>
+<p>Jump up to section 0 and forward declare this private method.
+</p><pre class="code-block"><span class="hljs-comment">//****************************************************/</span>
+<span class="hljs-meta">#pragma mark - Section 0 - Private Declarations</span>
+<span class="hljs-comment">//****************************************************/</span>
+
+<span class="hljs-class"><span class="hljs-keyword">@interface</span> <span class="hljs-title">NSObject</span>()</span>
+- (<span class="hljs-keyword">void</span>)_setWindowControlsStatusBarOrientation:(<span class="hljs-built_in">BOOL</span>)orientation;
+<span class="hljs-keyword">@end</span></pre>
+<p>This will quiet the compiler and let the code build. The <code>UIDebuggingInformationOverlay</code>&apos;s <code>init</code> method has checks to return <code>nil</code>. Since the <code>init</code> method was rather simple, you just completely sidestepped this logic and reimplemented it yourself and removed all the “bad stuff”!
+</p>
+<p>Now, replace the code for <code>UIDebuggingInformationOverlay</code>&apos;s <code>init</code> with <code>FakeWindowClass</code>&apos;s <code>initSwizzled</code> method. Jump down to section 2 in <code>NSObject</code>&apos;s <code>load</code> method and replace the <code>load</code> method with the following:
+</p><pre class="code-block">+ (<span class="hljs-keyword">void</span>)load
+{
+  <span class="hljs-keyword">static</span> <span class="hljs-built_in">dispatch_once_t</span> onceToken;
+  <span class="hljs-built_in">dispatch_once</span>(&amp;onceToken, ^{
+    Class cls = <span class="hljs-built_in">NSClassFromString</span>(<span class="hljs-string">@"UIDebuggingInformationOverlay"</span>);
+    <span class="hljs-built_in">NSAssert</span>(cls, <span class="hljs-string">@"DBG Class is nil?"</span>);
+    
+    <span class="hljs-comment">// Swizzle code here</span>
+
+    [FakeWindowClass swizzleOriginalSelector:<span class="hljs-keyword">@selector</span>(init)
+                         withSizzledSelector:<span class="hljs-keyword">@selector</span>(initSwizzled)
+                                    forClass:cls
+                               isClassMethod:<span class="hljs-literal">NO</span>];
+  });
+}</pre>
+<p>Rerun and build the Overlay app with this new code. Tap on the <code>UIButton</code> to see what happens now that you&apos;ve replaced the <code>init</code> to produce a valid instance.
+</p><div class="image-25"><img src="graphics/img92.png"  alt="" title="" /></div>
+<p><code>UIDebuggingInformationOverlay</code> now pops up without any content. Almost there!
+</p>
+<h3 class="segment-chapter">The final push</h3>
+
+<p>You&apos;re about to build the final snippet of code for the soon-to-be-replacement method of <code>prepareDebuggingOverlay</code>. <code>prepareDebuggingOverlay</code> had an initial check at the beginning of the method to see if <code>_UIGetDebuggingOverlayEnabled()</code> returned <code>0x0</code> or <code>0x1</code>. If this method returned <code>0x0</code>, then control jumped to the end of the function.
+</p>
+<p>In order to get around this, you&apos;ll replicate the same actions you observed in Chapter 12, “Assembly and the Stack” for x86 assembly. That is, you&apos;ll “simulate” a <code><em>call</em></code> instruction by pushing a return address onto the stack, but instead of <code>call</code>&apos;ing, you&apos;ll <code><em>jmp</em></code> into an offset past the <code>_UIGetDebuggingOverlayEnabled</code> check. That way, you can perform the function proglogue in your stack frame and directly skip the dreaded check in the beginning of <code>prepareDebuggingOverlay</code>.
+</p>
+<p>In <em>NSObject+UIDebuggingInformationOverlayInjector.m</em>, Navigate down to <em>Section 3 - prepareDebuggingOverlay</em>, and add the following snippet of code:
+</p><pre class="code-block">+ (<span class="hljs-keyword">void</span>)prepareDebuggingOverlaySwizzled {
+  Class cls = <span class="hljs-built_in">NSClassFromString</span>(<span class="hljs-string">@"UIDebuggingInformationOverlay"</span>);
+  SEL sel = <span class="hljs-keyword">@selector</span>(prepareDebuggingOverlaySwizzled);
+  Method m = class_getClassMethod(cls, sel); 
+  IMP imp =  method_getImplementation(m); <span class="hljs-comment">// 1</span>
+
+  <span class="hljs-keyword">void</span> (*methodOffset) = (<span class="hljs-keyword">void</span> *)((imp + (<span class="hljs-keyword">long</span>)<span class="hljs-number">27</span>)); <span class="hljs-comment">// 2</span>
+  <span class="hljs-keyword">void</span> *returnAddr = &amp;&amp;RETURNADDRESS; <span class="hljs-comment">// 3</span>
+  
+  <span class="hljs-comment">// You'll add some assembly here in a sec</span>
+  RETURNADDRESS: ;  <span class="hljs-comment">// 4</span>
+}</pre>
+<p>Let&apos;s break this crazy witchcraft down:
+</p>
+<ol>
+<li>
+<p>I want to get the starting address of the original <code>prepareDebuggingOverlay</code>. However, I know this will be swizzled code, so when this code executes, <code>prepareDebuggingOverlaySwizzled</code> will actually point to the real, <code>prepareDebuggingOverlay</code> starting address.
+</p></li>
+
+<li>
+<p>I take the starting address of the original <code>prepareDebuggingOverlay</code> (given to me through the <code>imp</code> variable) and I offset the value in memory past the <code>_UIGetDebuggingOverlayEnabled()</code> check. I used LLDB to figure the exact offset by dumping the assembly and calculating the offset (<code>disassemble -n &quot;+[UIDebuggingInformationOverlay prepareDebuggingOverlay]&quot;</code>). This is <i>insanely</i> brittle as any new code or compiler changes from clang will likely break this. I strongly recommend you calculate this yourself in case this changes past iOS 11.1.1.
+</p></li>
+
+<li>
+<p>Since you are faking a function call, you need an address to return to after this soon-to-be-executed function offset finishes. This is accomplished by getting the address of a declared label. Labels are a not often used feature by normal developers which allow you to <code>jmp</code> to different areas of a function. The use of labels in modern programming is considered bad practice as if/for/while loops can accomplish the same thing... but not for this crazy hack.
+</p></li>
+
+<li>
+<p>This is the declaration of the label <code>RETURNADDRESS</code>. No, you <i>do</i> need that semicolon after the label as the C syntax for a label to have a statement immediately following it.
+</p></li>
+</ol>
+
+<p>Time to cap this bad boy off with some sweet inline assembly! Right above the label <code>RETURNADDRESS</code> declaration, add the following inline assembly:
+</p><pre class="code-block">+ (<span class="hljs-keyword">void</span>)prepareDebuggingOverlaySwizzled {
+  Class cls = <span class="hljs-built_in">NSClassFromString</span>(<span class="hljs-string">@"UIDebuggingInformationOverlay"</span>);
+  SEL sel = <span class="hljs-keyword">@selector</span>(prepareDebuggingOverlaySwizzled);
+  Method m = class_getClassMethod(cls, sel); 
+
+  IMP imp =  method_getImplementation(m); 
+  <span class="hljs-keyword">void</span> (*methodOffset) = (<span class="hljs-keyword">void</span> *)((imp + (<span class="hljs-keyword">long</span>)<span class="hljs-number">27</span>)); 
+  <span class="hljs-keyword">void</span> *returnAddr = &amp;&amp;RETURNADDRESS; 
+  
+  __asm__ __volatile__(     <span class="hljs-comment">// 1</span>
+      <span class="hljs-string">"pushq  %0\n\t"</span>       <span class="hljs-comment">// 2</span>
+      <span class="hljs-string">"pushq  %%rbp\n\t"</span>    <span class="hljs-comment">// 3</span>
+      <span class="hljs-string">"movq   %%rsp, %%rbp\n\t"</span>
+      <span class="hljs-string">"pushq  %%r15\n\t"</span>
+      <span class="hljs-string">"pushq  %%r14\n\t"</span>
+      <span class="hljs-string">"pushq  %%r13\n\t"</span>
+      <span class="hljs-string">"pushq  %%r12\n\t"</span>
+      <span class="hljs-string">"pushq  %%rbx\n\t"</span>
+      <span class="hljs-string">"pushq  %%rax\n\t"</span>
+      <span class="hljs-string">"jmp  *%1\n\t"</span>        <span class="hljs-comment">// 4</span>
+      :
+      : <span class="hljs-string">"r"</span> (returnAddr), <span class="hljs-string">"r"</span> (methodOffset)); <span class="hljs-comment">// 5</span>
+  
+  RETURNADDRESS: ;  <span class="hljs-comment">// 5</span>
+}</pre>
+<ol>
+<li>
+<p>Don&apos;t be scared, you&apos;re about to write x86_64 assembly in AT&amp;T format (Apple&apos;s assembler is not a fan of Intel). That <code>__volatile__</code> is there to hint to the compiler to not try and optimize this away.
+</p></li>
+
+<li>
+<p>You can think of this sort of like C&apos;s <code>printf</code> where the <code>%0</code> will be replaced by the value supplied by the <code>returnAddr</code>. In x86, the return address is pushed onto the stack right before entering a function. As you know, <code>returnAddr</code> points to an executable address following this assembly. This is how we are faking an actual function call!
+</p></li>
+
+<li>
+<p>The following assembly is copy pasted from the function prologue in the <code>+[UIDebuggingInformationOverlay prepareDebuggingOverlay]</code>. This lets us perform the setup of the function, but allows us to skip the dreaded check.
+</p></li>
+
+<li>
+<p>Finally we are jumping to offset 27 of the <code>prepareDebuggingOverlay</code> after we have set up all the data and stack information we need to not crash. The <code>jmp *%1</code> will get resolved to <code>jmp</code>&apos;ing to the value stored at <code>methodOffset</code>. Finally, what are those &quot;r&quot; strings? I won&apos;t get too into the details of inline assembly as I think your head might explode with an information overload (think Scanners), but just know that this is telling the assembler that your assembly can use any register for reading these values.
+</p></li>
+</ol>
+
+<p>Jump back up to section 2 where the swizzling is performed in the <code>+load</code> method and add the following line of code to the end of the method:
+</p><pre class="code-block">[<span class="hljs-keyword">self</span> swizzleOriginalSelector:<span class="hljs-keyword">@selector</span>(prepareDebuggingOverlay) 
+          withSizzledSelector:<span class="hljs-keyword">@selector</span>(prepareDebuggingOverlaySwizzled) 
+                     forClass:cls
+                isClassMethod:<span class="hljs-literal">YES</span>];</pre>
+<p>Build and run. Tap on the <code>UIButton</code> to execute the required code to setup the <code>UIDebuggingInformationOverlay</code> class, then perform the two-finger tap on the status bar.
+</p><div class="image-25"><img src="graphics/img93.png"  alt="" title="" /></div>
+<p>Omagerd, can you believe that worked?
+</p>
+<p>I am definitely a fan of the hidden status bar dual tap thing, but let&apos;s say you wanted to bring this up solely from code. Here&apos;s what you can do:
+</p>
+<p>Open <em>ViewController.swift</em>. At the top of the file add:
+</p><pre class="code-block"><span class="hljs-keyword">import</span> UIKit.UIGestureRecognizerSubclass</pre>
+<p>This will let you set the <em>state</em> of a <code>UIGestureRecognizer</code> (default headers allow only read-only access to the <code>state</code> variable).
+</p>
+<p>Once that&apos;s done, augment the code in <code>overlayButtonTapped(_ sender: Any)</code> to be the following:
+</p><pre class="code-block"><span class="hljs-meta">@IBAction</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">overlayButtonTapped</span><span class="hljs-params">(<span class="hljs-number">_</span> sender: Any)</span></span> {
+  <span class="hljs-keyword">guard</span> 
+    <span class="hljs-keyword">let</span> cls = <span class="hljs-type">NSClassFromString</span>(<span class="hljs-string">"UIDebuggingInformationOverlay"</span>) <span class="hljs-keyword">as</span>? <span class="hljs-type">UIWindow</span>.<span class="hljs-type">Type</span> <span class="hljs-keyword">else</span> {
+      <span class="hljs-built_in">print</span>(<span class="hljs-string">"UIDebuggingInformationOverlay class doesn't exist!"</span>)
+      <span class="hljs-keyword">return</span>
+  }    
+  cls.perform(<span class="hljs-type">NSSelectorFromString</span>(<span class="hljs-string">"prepareDebuggingOverlay"</span>))
+
+  <span class="hljs-keyword">let</span> tapGesture = <span class="hljs-type">UITapGestureRecognizer</span>()
+  tapGesture.state = .ended
+
+  <span class="hljs-keyword">let</span> handlerCls = <span class="hljs-type">NSClassFromString</span>(<span class="hljs-string">"UIDebuggingInformationOverlayInvokeGestureHandler"</span>) <span class="hljs-keyword">as</span>! <span class="hljs-type">NSObject</span>.<span class="hljs-type">Type</span>
+  <span class="hljs-keyword">let</span> handler = handlerCls
+    .perform(<span class="hljs-type">NSSelectorFromString</span>(<span class="hljs-string">"mainHandler"</span>))
+    .takeUnretainedValue()
+  <span class="hljs-keyword">let</span> <span class="hljs-number">_</span> = handler
+    .perform(<span class="hljs-type">NSSelectorFromString</span>(<span class="hljs-string">"_handleActivationGesture:"</span>),
+             with: tapGesture)
+}</pre>
+<p>Final build and run. Tap on the button and see what happens.
+</p>
+<p>Boom.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>Crazy chapter, eh? In this chapter, you spelunked into memory and changed <code>dispatch_once_t</code> tokens as well as Booleans in memory to build a POC <code>UIDebuggingInformationOverlay</code> that&apos;s compatible with iOS 11 while getting around Apple&apos;s newly introduced checks to prevent you from using this class.
+</p>
+<p>Then you used Objective-C&apos;s method swizzling to perform the same actions as well as hook into only a portion of the original method, bypassing several short-circuit checks.
+</p>
+<p>This is why reverse engineering Objective-C is so much fun, because you can hook into methods that are quietly called in private code you don’t have the source for and make changes or monitor what it’s doing.
+</p>
+<p>Still have energy after that brutal chapter? This swizzled code will not work on an ARM64 device. You&apos;ll need to look at the assembly and perform an alernative action for that architecture likely through a preprocessor macro.
+</p>
+<p>Oh, and remember how I said that <code>UIDebuggingInformationOverlay</code> can totally be made into an LLDB script that&apos;s compatible on both the Simulator and an actual device on iOS 11? Well, here it is:
+</p>
+<p><a href="https://github.com/DerekSelander/LLDB/blob/master/lldb_commands/overlaydbg.py">https://github.com/DerekSelander/LLDB/blob/master/lldb</a><a href="https://github.com/DerekSelander/LLDB/blob/master/lldb_commands/overlaydbg.py">_</a><a href="https://github.com/DerekSelander/LLDB/blob/master/lldb_commands/overlaydbg.py">commands/overlaydbg.py</a>
+</p>
+<p>Mic drop.
+</p>
+<p>Enjoy!
+</p></body></html>

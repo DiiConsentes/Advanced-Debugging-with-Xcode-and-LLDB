@@ -1,0 +1,666 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 20: Script Bridging with Options &amp; Arguments</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 20: Script Bridging with Options &amp; Arguments</h1>
+
+<p>When you’re creating a custom debugging command, you’ll often want to slightly tweak functionality based upon options or arguments supplied to your command. A custom LLDB command that can do a job only one way is a boring one-trick pony.
+</p>
+<p>In this chapter, you’ll explore how to pass optional parameters (aka options) as well as arguments (parameters which are <i>expected</i>) to your custom command to alter functionality or logic in your custom LLDB scripts.
+</p>
+<p>You’ll continue working with the <code><em>bar</em></code> (“break-after-regex”) command you created in the previous chapter. In this chapter, you’ll finish up the <code>bar</code> command by adding logic to handle options in your script.
+</p>
+<p>By the end of this chapter, the <code>bar</code> command will have logic to handle the following optional parameters:
+</p>
+<ul>
+<li>
+<p><em>Non-regular expression search</em>: Using the <code><em>-n</em></code> or <code><em>--non_regex</em></code> option will result in the <code>bar</code> command using a non-regular expression breakpoint search instead. This option will <i>not</i> take any additional parameters.
+</p></li>
+
+<li>
+<p><em>Filter by module</em>: Using the <code><em>-m</em></code> or <code><em>--module</em></code> option will only search for breakpoints in that particular module. This option will expect an additional parameter which specifies the name of the module.
+</p></li>
+
+<li>
+<p><em>Stop on condition</em>: Using the <code><em>-c</em></code> or <code><em>--condition</em></code> option, the <code>bar</code> command will evaluate the given condition after stepping out of the current function. If <code>True</code>, execution will stop. If <code>False</code>, execution will continue. This option will expect an additional parameter which is a string of code that will be executed and evaluated as an Objective-C <code>BOOL</code>.
+</p></li>
+</ul>
+
+<p>This will be a dense but fun chapter. Make sure you’ve got a good supply of caffeine!
+</p>
+<h2 class="segment-chapter">Setting up</h2>
+
+<p>If you’ve gone through the previous chapter and your <code>bar</code> command is working, then you can continue using that script and ignore this part. Otherwise, head on over to the <em>starter</em> folder in this chapter’s resources, and copy the <em>BreakAfterRegex.py</em> file into your <em>~/lldb</em> folder. Make sure your <em>~/.lldbinit</em> file has the following line which you should have from the previous chapter:
+</p><pre class="code-block">command script import ~/lldb/BreakAfterRegex.py</pre>
+<p>If you&apos;ve any doubts if this command loaded successfully into LLDB, simply fire up a new LLDB instance in Terminal:
+</p><pre class="code-block">lldb</pre>
+<p>Then check for the help docstring of the <code>bar</code> command:
+</p><pre class="code-block">(lldb) help bar</pre><div class="image-80"><img src="graphics/img106.png"  alt="" title="" /></div>
+<p>If you get an error, it’s not successfully loaded; but if you got the docstring, you’re golden.
+</p>
+<h3 class="segment-chapter">The RWDevCon project</h3>
+
+<p>For this chapter, you’ll use an app called <em>RWDevcon</em>. It’s a live app, available in the App Store (<a href="https://itunes.apple.com/us/app/rwdevcon-the-tutorial-conference/id958625272">https://itunes.apple.com/us/app/rwdevcon-the-tutorial-conference/id958625272</a>).
+</p><div class="image-40"><img src="graphics/img107.png"  alt="" title="" /></div>
+<p>This app is the companion app for the <em>RWDevcon</em> conference, <a href="https://www.rwdevcon.com/">https://www.rwdevcon.com/</a>, where it’s an annual tradition to see how many times you can touch Ray Wenderlich’s shoulders before he gets annoyed. Try it! My personal best is 37!
+</p>
+<p>For this project, I’ve forked from commit <code>84167c68</code> which can be found in the <em>starter</em> folder. However, you can get a more up-to-date version here: <a href="https://github.com/raywenderlich/RWDevCon-App">https://github.com/raywenderlich/RWDevCon-App</a>.
+</p>
+<p>Navigate to the starter folder then open, build, then run this application. Take a look around to get acquainted with the project.
+</p>
+<p>There’s no need to explore any of the source code. With the aid of the <code>bar</code> command, you’ll be able to explore different items of interest with smart breakpoint queries.
+</p>
+<p>But before we can do that, let’s talk about how to make this bar command much more powerful.
+</p>
+<h2 class="segment-chapter">The optparse Python module</h2>
+
+<p>The lovely thing about LLDB Python scripts is you have all the power of Python — and its modules — at your disposal.
+</p>
+<p>There are three notable modules that ship with Python 2.7 that are worth looking into when parsing options and arguments: <code><em>getopt</em></code>, <code><em>optparse</em></code>, and <code><em>argparse</em></code>.
+</p>
+<p><code>getopt</code> is kind of low level and <code>optparse</code> is on its way out since it’s been deprecated after Python 2.7. Unfortunately <code>argparse</code> is mostly designed to work with Python’s <code>sys.argv</code> — which is not available to your Python LLDB command scripts. This means <code>optparse</code> will be your go-to option. Facebook’s Chisel, Apple’s own custom LLDB scripts, and I all use this module. So, it’s kinda the de-facto standard for parsing arguments. ;]
+</p>
+<p>The <code>optparse</code> module will let you define an instance of type <em>OptionParser</em>, a class responsible for parsing all your arguments. For this class to work, you need to declare what arguments and options your command supports. This makes sense because optional parameters may or may not take additional values for that particular option.
+</p>
+<p>Take a brief look at an example. Consider the following:
+</p><pre class="code-block">some_command woot -b 34 -a &quot;hello world&quot;</pre>
+<p>The command is named <code>some_command</code>. But what are the arguments and options being passed into this command?
+</p>
+<p>If you didn’t give any context to the parser, then this statement is ambiguous. The parser doesn’t know whether or not the <code>-b</code> or <code>-a</code> option should take in parameters for the option. For example, the parser could think this command is passed three arguments: <code>[&apos;woot&apos;, &apos;34&apos;, &apos;hello world&apos;]</code>, and two options <code>-b</code>, <code>-a</code> with no parameters. However, if the parser expected <code>-b</code> and <code>-a</code> to take parameters, the parser would give you the argument of <code>[&apos;woot&apos;]</code>, <code>&apos;34&apos;</code> for the <code>-b</code> option and <code>&apos;hello world&apos;</code> for <code>-a</code>.
+</p>
+<p>Let’s dive into <code>optparse</code> some more, and see how we can use it to handle cases like this.
+</p>
+<h2 class="segment-chapter">Adding options without params</h2>
+
+<p>With the knowledge you need to educate your parser with what arguments are expected, it’s time to add your first option which will alter the functionality of the <code>bar</code> command to apply the <code>SBBreakpoint</code> without using a regular expression, but instead use a normal expression.
+</p>
+<p>This argument will be backed by a Python <code>boolean</code> value, so no parameters are needed for this option. The existence (or lack thereof) of this option is all the information you need to determine the <code>boolean</code> value. If the argument exists, then it’ll be <code>True</code>. Otherwise, <code>False</code>.
+</p>
+<p>It’s worth noting some script authors will engineer an option that will encourage a <code>boolean</code> option which explicitly requires a parameter for the Boolean value and default to either <code>True</code> or <code>False</code> if the option is not supplied.
+</p>
+<p>For example, the following command takes an option, <code><em>-f</em></code> with no parameters:
+</p><pre class="code-block">some_command -f</pre>
+<p>This would then turn into:
+</p><pre class="code-block">some_command -f1</pre>
+<p>That’s not really my style. But you might want to consider this design decision if you’re building scripts for a wider audience, since it gives the user more explicit intentions.
+</p>
+<p>Ok, enough chit-chat. Let’s get to implementing this parser thing.
+</p>
+<p>Open up <em>BreakAfterRegex.py</em> and add the following <code>import</code> statements at the top of the file:
+</p><pre class="code-block"><span class="hljs-keyword">import</span> optparse
+<span class="hljs-keyword">import</span> shlex</pre>
+<p>The <code>optparse</code> is the module you just covered that contains the <code>OptionParser</code> class to parse any extra input given to your command.
+</p>
+<p>The <code><em>shlex</em></code> module has a nice little Python function that conveniently splits up the arguments supplied to your command on your behalf while keeping string arguments intact.
+</p>
+<p>For example, consider the following Python code:
+</p><pre class="code-block"><span class="hljs-keyword">import</span> shlex
+command = <span class="hljs-string">'"hello world" "2nd parameter" 34'</span>
+shlex.split(command)</pre>
+<p>This will produce the following output:
+</p><pre class="code-block">[<span class="hljs-string">'hello world'</span>, <span class="hljs-string">'2nd parameter'</span>, <span class="hljs-string">'34'</span>]</pre>
+<p>This returns a Python <code>list</code> of parsed Python <code>str</code>s.
+</p>
+<p>But before you go using this <code>split</code> method, you’ll need to create the parser itself. Head to the very bottom of <em>BreakAfterRegex.py</em> and create the following method:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">generateOptionParser</span><span class="hljs-params">()</span>:</span>
+  <span class="hljs-string">'''Gets the return register as a string for lldb
+    based upon the hardware
+  '''</span>
+  usage = <span class="hljs-string">"usage: %prog [options] breakpoint_query\n"</span> +\
+          <span class="hljs-string">"Use 'bar -h' for option desc"</span>
+  <span class="hljs-comment"># 1</span>
+  parser = optparse.OptionParser(usage=usage, prog=<span class="hljs-string">'bar'</span>) 
+  <span class="hljs-comment"># 2</span>
+  parser.add_option(<span class="hljs-string">"-n"</span>, <span class="hljs-string">"--non_regex"</span>,
+                    <span class="hljs-comment"># 3 </span>
+                    action=<span class="hljs-string">"store_true"</span>,
+                    <span class="hljs-comment"># 4</span>
+                    default=<span class="hljs-keyword">False</span>,
+                    <span class="hljs-comment"># 5</span>
+                    dest=<span class="hljs-string">"non_regex"</span>,
+                    <span class="hljs-comment"># 6</span>
+                    help=<span class="hljs-string">"Use a non-regex breakpoint instead"</span>)
+  <span class="hljs-comment"># 7</span>
+  <span class="hljs-keyword">return</span> parser</pre>
+<p>Let’s break this down, parameter by parameter:
+</p>
+<ol>
+<li>
+<p>You’re creating the <code>OptionParser</code> instance and supplying it a <em>usage</em> param and a <em>prog</em> param. The <code>usage</code> will get displayed if you screw up and give the parser an argument it doesn’t know how to handle. The <code>prog</code> option is used to address the name of the program. I always incorporate it because it resolves a weird little issue which lets you run the <code>-h</code> or <code>--help</code> option to get all the supported options for a custom command. If the <code>prog</code> arg is not in there, the <code>-h</code> command will not work correctly. It’s one of life’s little mysteries. <code>¯\_(ツ)_/¯</code>
+</p></li>
+
+<li>
+<p>This line (followed by the next four lines of non-commented code) add the <code><em>--non_regex</em></code> or <code><em>-n</em></code> parameter to the <code>parser</code>.
+</p></li>
+
+<li>
+<p>The <code><em>action</em></code> param informs what action should be done when this param is supplied. <code>&quot;store_true&quot;</code> informs the parser to store the Python Boolean <code>True</code> when this option is supplied.
+</p></li>
+
+<li>
+<p>The <code><em>default</em></code> param informs that the initial value will be <code>False</code>. If this option is not given, this will be the value.
+</p></li>
+
+<li>
+<p>The <code><em>dest</em></code> parameter will determine the name, <em>non</em><em>_</em><em>regex</em>, that you’re giving to the property when the <code>OptionParser</code> parses your input. For example, consider the following code which parses a Python string of options and arguments in <code>command</code>:
+</p></li>
+</ol>
+<pre class="code-block">command_args = shlex.split(command)
+(options, args) = parser.parse_args(command_args)
+options.non_regex</pre>
+<p>As you’ll see shortly, the <code>parse_args</code> method produces a Python tuple containing a list of options (called <code>options</code>) and a list of arguments (called <code>args</code>). The <code>options</code> variable will now contain the <code>non_regex</code> property.
+</p>
+<ol>
+<li>
+<p><code><em>help</em></code> will give you help documentation. You can get all the parameters and their info with the <code>--help</code> option. For example, when this is correctly set up in the <code>bar</code> command, all you have to do is type <code>bar -h</code> to see a list of all the options and what they do.
+</p></li>
+
+<li>
+<p>Once you’ve created the <code>OptionParser</code> and added the <code>-n</code> option, you’re returning the instance of the <code>OptionParser</code>.
+</p></li>
+</ol>
+
+<p>You’ve just created a method that will generate this <code>OptionParser</code> instance you need to start parsing those arguments. Now it’s time to use this thing.
+</p>
+<p>Jump back to the beginning of the <code>breakAfterRegex</code> function. Remove the following two lines:
+</p><pre class="code-block">target = debugger.GetSelectedTarget()
+breakpoint = target.BreakpointCreateByRegex(command)</pre>
+<p>Then, in their place, add the following code:
+</p><pre class="code-block"><span class="hljs-string">'''Creates a regular expression breakpoint and adds it.
+Once the breakpoint is hit, control will step out of the 
+current function and print the return value. Useful for 
+stopping on getter/accessor/initialization methods
+'''</span>
+
+<span class="hljs-comment"># 1</span>
+command = command.replace(<span class="hljs-string">'\\'</span>, <span class="hljs-string">'\\\\'</span>)
+<span class="hljs-comment"># 2</span>
+command_args = shlex.split(command, posix=<span class="hljs-keyword">False</span>)
+
+<span class="hljs-comment"># 3</span>
+parser = generateOptionParser()
+
+<span class="hljs-comment"># 4</span>
+<span class="hljs-keyword">try</span>:
+  <span class="hljs-comment"># 5</span>
+  (options, args) = parser.parse_args(command_args)
+<span class="hljs-keyword">except</span>:
+  result.SetError(parser.usage)
+  <span class="hljs-keyword">return</span>
+
+target = debugger.GetSelectedTarget()
+
+<span class="hljs-comment"># 6</span>
+clean_command = shlex.split(args[<span class="hljs-number">0</span>])[<span class="hljs-number">0</span>]
+
+<span class="hljs-comment"># 7</span>
+<span class="hljs-keyword">if</span> options.non_regex:
+  breakpoint = target.BreakpointCreateByName(
+                      clean_command)
+<span class="hljs-keyword">else</span>:
+  breakpoint = target.BreakpointCreateByRegex(
+                      clean_command)
+
+<span class="hljs-comment"># The rest remains unchanged</span></pre>
+<p>Make sure you have your indentation correct! This should be indented by two spaces, or whatever your single-tab width of choice is, as it’s all part of the function.
+</p>
+<p>Here’s what that code does:
+</p>
+<ol>
+<li>
+<p>When parsing your input to the <code>OptionParser</code>, it will interpret slashes as escaping characters. For example, <code>&quot;\&apos;&quot;</code> is interpreted as just <code>&quot;&apos;&quot;</code>. This means you’ll need to escape any backslash characters in your commands.
+</p></li>
+
+<li>
+<p>As you learned in a previous chapter, the <code>command</code> parameter passed into your custom LLDB scripts is a Python <code>str</code>, which contains all input that is passed into your argument. You’ll pass this variable into the <code>shlex.split</code> method to obtain a Python <code>list</code> of Python <code>str</code>s. In addition, there’s that <code>posix=False</code> which helps combat any input which contains special characters like a dash; otherwise, <code>OptionParser</code> will incorrectly assume that’s an option being passed in. This is important because Objective-C has dashes in instance methods, so you don&apos;t want the dash to be incorrectly interpreted as an option!
+</p></li>
+
+<li>
+<p>Using the newly created <code>generateOptionParser</code> function, you create a parser to handle the command’s input.
+</p></li>
+
+<li>
+<p>Parsing input can be error-prone. Python’s usual approach to error handling is throwing exceptions. It’s no surprise that <code>optparse</code> throws if it finds an error. If you don’t catch exceptions in your scripts, LLDB will go down, which will also tank the process! Therefore, the parsing is contained in a try-except block to prevent LLDB from dying due to bad input.
+</p></li>
+
+<li>
+<p>The <code>OptionParser</code> class has a <code><em>parse_args</em></code> method. You’re passing in your <code>command_args</code> variable to this method, and will receive a tuple in return. This tuple consists of two values: <code><em>options</em></code>, which consists of all option arguments (i.e. only the <code>non_regex</code> option right now). The other half of the tuple hands you all of the <code><em>args</em></code> which consists of any other input parsed by the parser.
+</p></li>
+</ol>
+
+<ol>
+<li>
+<p>You’re taking the first captured argument (the breakpoint query) and assigning it to a variable called <code><em>clean_command</em></code>. Remember that <code>posix=False</code> mentioned in bullet 2? That logic will maintain the quotes around your captured argument which preserves your exact syntax. If you didn’t have that <code>posix=False</code>, you could just use <code>args[0]</code>, but then you’d forfeit a lot of power in your regex by not being able to use the escape backslash character in your regex query.
+</p></li>
+
+<li>
+<p>You’re putting your first option to use! You’re checking the truthiness of <code>options.non_regex</code>. If <code>True</code>, you’ll execute the <code>BreakpointCreateByName</code> method in <code>SBTarget</code> to implement a non-regular expression breakpoint. If the <code>non_regex</code> is <code>False</code> (by default it is when you supplied the <em>default</em> parameter inside the <code>generateOptionParser</code> function), then your script will use a regex search. Again, all you need to do is add the <code>-n</code> to your input for the <code>bar</code> command to make the <code>non_regex</code> <code>True</code>.
+</p></li>
+</ol>
+
+<h3 class="segment-chapter">Testing out your first option</h3>
+
+<p>Enough code. Time to test this script out.
+</p>
+<p>Instead of using that <em>reload</em><em>_</em><em>script</em> command you’ve used in the previous chapters, you’ll try an alternative tactic that you might appreciate to reload the script.
+</p>
+<p>Jump to Xcode and create a new symbolic breakpoint.
+</p>
+<p>Make sure the <em>Breakpoint Navigator</em> tab is selected, then hunt down that lonely <em>+</em> icon in the lower left corner. Then select <em>Symbolic breakpoint...</em>. Alternatively for you cool kids, <code><em>⌘ + Ctrl + \</em></code>
+</p>
+<p>In the <em>Symbol</em> section put <em>getenv</em>.
+</p>
+<p>Add <em>2 actions</em>. The first action adds the following command:
+</p><pre class="code-block">br dis 1</pre>
+<p>In the next action, add your <code>bar</code> command:
+</p><pre class="code-block">bar -n &quot;-[NSUserDefaults(NSUserDefaults) objectForKey:]&quot;</pre>
+<p>Finally select <em>Automatically continue after evaluating actions</em>.
+</p>
+<p>When all is said and done, your symbolic breakpoint should look like this:
+</p><div class="image-80"><img src="graphics/img108.png"  alt="" title="" /></div>
+<p>Can you figure out what you’ve just done? You’ve created a Symbolic breakpoint on the <code>getenv</code> C function. If I want to setup breakpoints before “my” code starts executing, or before reverse engineering an app, this is a good go-to to hook any logic for custom commands you want in LLDB.
+</p>
+<p>I’m not a fan of using <code>main</code>, since a lot of executables contain the function <code>main</code>, and the primary executable’s <code>main</code> symbol might be stripped in a production build of an executable. We know that <code>getenv</code> will get hit for sure and will get hit before my code starts running.
+</p>
+<p>What about those actions? The first action says to get rid of that <code>getenv</code> breakpoint. You’re not deleting it; you’re just disabling it. This is ideal since <code>getenv</code> gets called a fair bit and you need to get rid of this breakpoint once you’ve setup your LLDB logic. The use of <em>1</em> is mentioned because this breakpoint is the first breakpoint created for this session, which disables this symbolic breakpoint after it has run once.
+</p>
+<p>After that, you’re creating a non regular expression breakpoint on <code>NSUSerDefaults</code>’s <code>objectForKey:</code> method. We expect this method to return an <code>id</code> or <code>nil</code>, so let’s see what this RWDevCon app is reading (or writing) to our <code>NSUserDefaults</code>.
+</p>
+<p>Build and run the application.
+</p>
+<p>If you haven’t taken a deep dive into the app, you’ll likely get a lot of <code>nil</code> values. This means that this method is definitely getting read by some code in this app.
+</p><div class="image-90"><img src="graphics/img109.png"  alt="" title="" /></div>
+<p>Tap on any one of the workshops to bring up the detail view controller.
+</p>
+<p>Before you continue, clear the LLDB window (<em>⌘ + K</em>).
+</p>
+<p>From there, tap <em>Add to my Schedule</em> while keeping an eye on the console output.
+</p><div class="image-90"><img src="graphics/img110.png"  alt="" title="" /></div>
+<p>You can see there’s an object that gets added to the <code>NSUserDefaults</code> that matches the <code>When</code> time.
+</p>
+<h2 class="segment-chapter">Adding options with params</h2>
+
+<p>You’ve learned how to add an option that expects no arguments. You’ll now add another option that expects a parameter.  This next option will be the <code><em>--module</em></code> option to specify which module you want to constrain your regular expression query to.
+</p>
+<p>This is very similar to <code>breakpoint set</code>’s <code>-s</code> (aka <code>--shlib</code> option) option where it expects the name of the module immediately after the option. You explored this back in Chapter 4, “Stopping in Code”.
+</p>
+<p>In the <em>BreakAfterRegex.py</em> script jump back down to the <code>generateOptionParser</code> function and add the following code right before <code>return parser</code>:
+</p><pre class="code-block"><span class="hljs-comment"># 1</span>
+parser.add_option(<span class="hljs-string">"-m"</span>, <span class="hljs-string">"--module"</span>,
+                  <span class="hljs-comment"># 2</span>
+                  action=<span class="hljs-string">"store"</span>,
+                  <span class="hljs-comment"># 3</span>
+                  default=<span class="hljs-keyword">None</span>,
+                  <span class="hljs-comment"># 4</span>
+                  dest=<span class="hljs-string">"module"</span>,
+                  help=<span class="hljs-string">"Filter a breakpoint by only searching within a specified Module"</span>)</pre>
+<ol>
+<li>
+<p>You’re adding a new option <code>-m</code> or <code>--module</code> to the OptionParser instance.
+</p></li>
+</ol>
+
+<ol>
+<li>
+<p>In the previous option, the <code>action</code> was <code>&quot;store_true&quot;</code>; this time it is <code>&quot;store&quot;</code>. This means this option expects a parameter.
+</p></li>
+
+<li>
+<p>This parameter’s default value is <code>None</code>.
+</p></li>
+
+<li>
+<p>The name of this property will be <code><em>module</em></code>.
+</p></li>
+</ol>
+
+<p>Jump back to the <code><em>breakAfterRegex</em></code> function and scan for the following lines:
+</p><pre class="code-block"><span class="hljs-keyword">if</span> options.non_regex:
+  breakpoint = target.BreakpointCreateByName(clean_command)
+<span class="hljs-keyword">else</span>:
+  breakpoint = target.BreakpointCreateByRegex(clean_command)</pre>
+<p>Add <code><em>options.module</em></code> as the second parameter to both of these functions.
+</p><pre class="code-block"><span class="hljs-keyword">if</span> options.non_regex:
+  breakpoint = target.BreakpointCreateByName(clean_command, options.module)
+<span class="hljs-keyword">else</span>:
+  breakpoint = target.BreakpointCreateByRegex(clean_command, options.module)</pre>
+<p>So how does this work? Let’s print out the method signature right now for <em>BreakpointCreateByRegex</em>. Type the following in LLDB:
+</p><pre class="code-block">(lldb) script help (lldb.SBTarget.BreakpointCreateByRegex)</pre>
+<p>This will dump the small amount of documentation for this function. Although there is no help documentation for this method, it does give you a list of its method signatures.
+</p><div class="image-90"><img src="graphics/img111.png"  alt="" title="" /></div>
+<p>The following signature is worth discussing:
+</p><pre class="code-block"><span class="hljs-type">BreakpointCreateByRegex</span>(<span class="hljs-type">SBTarget</span> <span class="hljs-keyword">self</span>, str symbol_name_regex, str module_name=<span class="hljs-type">None</span>) -&gt; <span class="hljs-type">SBBreakpoint</span></pre>
+<p>Take note of the final parameter: <code>module_name=None</code>. The fact it’s an optional parameter means if you don’t supply a parameter, the <code>module_name</code> will take the value as <code>None</code>. This means when the <code>OptionParser</code> instance parses the options, you can supply <code>options.module</code> into the <code>BreakpointCreateByRegex</code> method regardless, since the default value of <code>options.module</code> will be <code>None</code>, which is the same as not applying an extra argument.
+</p>
+<p>Time to test this out. Save your work in your script. Jump over to Xcode and modify that <code>getenv</code> Symbolic breakpoint. Replace the second action with the following line of code:
+</p><pre class="code-block">bar @objc.*.init -m RWDevCon</pre>
+<p>Make sure that <code>&apos;C&apos;</code> in <code>&apos;Con&apos;</code> is capitalized!
+</p><div class="image-60"><img src="graphics/img112.png"  alt="" title="" /></div>
+<p>This will create a regex breakpoint on all Objective-C objects that are subclassed by a Swift object and stick a breakpoint on their initializer. You are filtering this breakpoint query to only search for breakpoints inside the <em>RWDevCon</em> module.
+</p>
+<p>Run the application and check out all the Objective-C objects that are subclassed by Swift objects.
+</p>
+<p>Take a quick look at the output. You’ll get a lot of <code>__ObjC.NSEntityDescription</code> hits. That must mean there’s some CoreData logic that’s written in Swift, right?
+</p>
+<p>Right!
+</p>
+<p>Clear the screen (you should know that shortcut by now) and tap on a table cell that contains a workshop (i.e. no lunch or party dates) and see what pops up on the detail view controller.
+</p>
+<p>You’ll get a list of all the Objective-C objects that are subclassed by Swift. Search for the class named <code><em>Person</em></code>.
+</p><div class="image-95"><img src="graphics/img113.png"  alt="" title="" /></div>
+<p>Copy the address into your clipboard.
+</p>
+<p>Before you paste in your address, let’s dump all the methods implemented by this <code>Person</code> class. Since it’s an Objective-C subclass, it’s fair game to all those introspection commands you’ve made earlier.
+</p>
+<p>In LLDB type the following:
+</p><pre class="code-block">(lldb) methods Person</pre>
+<p>This will dump all the methods the <em>Person</em> class implements that the Objective-C runtime knows about. Note that I said <i>Objective-C runtime</i>. There still could be Swift methods that this class implements that the Objective-C runtime doesn&apos;t know about <i>even</i> if the class inerhits from <code>NSObject</code>!
+</p>
+<p>You can of course execute any of these methods on this valid <code>Person</code> instance.
+</p><div class="image-80"><img src="graphics/img114.png"  alt="" title="" /></div>
+<p>Let’s up the ante. You&apos;ll now create an option in the <code>bar</code> command that will allow you to add a condition, evaluated after the function the breakpoint is in finishes executing. If true, execution will stop; if false, execution will keep on going.
+</p>
+<p>You’ll apply this condition to <code>fullName</code> and only stop when you hit the name “Ray Wenderlich&quot;. Sneaky!
+</p>
+<h2 class="segment-chapter">Passing parameters into the breakpoint callback function</h2>
+
+<p>Time to create the parser option for <code>-c</code>, or <code>--condition</code>!
+</p>
+<p>Jump back to <code>BreakAfterRegex.py</code> and find <code>generateOptionParser</code>. Add the following line of code right before the <code>return parser</code> line of code:
+</p><pre class="code-block">parser.add_option(<span class="hljs-string">"-c"</span>, <span class="hljs-string">"--condition"</span>,
+                  action=<span class="hljs-string">"store"</span>,
+                  default=<span class="hljs-keyword">None</span>,
+                  dest=<span class="hljs-string">"condition"</span>,
+                  help=<span class="hljs-string">"Only stop if the expression matches True. Can reference return value through 'obj'. Obj-C only."</span>)</pre>
+<p>You should know what this is doing now, but here’s a quick recap. You’re creating the <code>--condition</code> option which defaults to <code>None</code> and expects a parameter. The help text has something interesting in there. You’re indicating you can reference the return value through the variable name <code><em>obj</em></code>. This means when you&apos;re evaluating code, you’ll take the return register and assign <code>obj</code> to it.
+</p>
+<p>Time to use this new option. But hold on... Think about this for a second. How are you going to pass the option parameters into the <code>SBBreakpoint</code> callback function?
+</p>
+<p>Remember, this callback function is being called by a “private” C++ API and is limited to a specific method signature. Consider the following declaration where you set the breakpoint handler:
+</p><pre class="code-block">breakpoint.SetScriptCallbackFunction(<span class="hljs-string">"BreakAfterRegex.breakpointHandler"</span>)</pre>
+<p>When the <code>SBBreakpoint</code> callback hits, this function will get called:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">breakpointHandler</span><span class="hljs-params">(frame, bp_loc, dict)</span>:</span>
+  <span class="hljs-comment"># method contents here</span></pre>
+<p>You only have the <code>SBFrame</code>, <code>SBBreakpointLocation</code>, and an internal Python <code>dict</code> to work with to pass around information. How can this function read the parameters which are parsed by your <code>OptionParser</code> instance and be given into another function? This function signature is locked-in to only supply these parameters.
+</p>
+<p>Several ideas come to mind to get around this problem. You can search for alternatives in <code>SBBreakpoint</code> or similar classes to see if there’s an API that lets you pass in other params.
+</p>
+<p>Alternatively, you can try and subclass a <code>SBBreakpoint</code> to add additional functionality to pass around the condition option parameter, or you can try using a global variable to pass around the parsed options. If you’re really desperate, you can try and dynamically creating a method at runtime using the <code><em>exec</em></code> Python function.
+</p>
+<p>Unfortunately, <code>SBBreakpoint</code> has no APIs to handle working with classes and callbacks, global variables are a bad idea in general and you could also run into threading problems for stale logic if multiple breakpoint callbacks are referencing a global set of options.
+</p>
+<p>Subclassing won’t work, since this Python LLDB class is dynamically generated behind the scenes by C++ code, and you’ll get a new instance each time when trying to access the passed around <code>SBBreakpoint</code>. Besides, 99% of the time, using <code>exec</code> is just a bad, bad idea.
+</p>
+<p>What’s a developer to do?
+</p>
+<p>This means you’ll have to default to using global variables and deal with the global variable state. Consider the following situation. You assign the options to a global variable and create <code>SBBreakpoint</code> 1. You do the exact same thing for <code>SBBreakpoint</code> 2.
+</p>
+<p>However, <code>SBBreakpoint</code> 1 gets triggered and the callback function is called, which references the global options. Since <code>SBBreakpoint</code> 2 was created, it has since modified these options to the incorrect expectation.
+</p>
+<p>Fortunately, there’s a slightly better alternative to using global variables, and you’ll come up with a sneaky solution to resolve the global state of the options.
+</p>
+<p>Instead of a global variable, you’ll create a Python class, which will have a class property to hold the options being passed around.
+</p>
+<p>Now to address that global state: instead of a property to hold the options, you’ll use a Python <em>dict</em> to hold the options.
+</p>
+<p>The nice thing about breakpoints is regardless of how many you create or delete, each breakpoint will have a unique ID per run session. This means you can use the breakpoint’s ID as a unique key to reference a particular set of options for each breakpoint.
+</p>
+<p>You can then set the breakpoints ID as the key and the options for that breakpoint as the value. Cool, right?
+</p>
+<p>Jump to the top of <em>BreakAfterRegex.py</em> and add the following logic right underneath the import statements:
+</p><pre class="code-block"># <span class="hljs-number">1</span>
+<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">BarOptions</span>(<span class="hljs-title">object</span>):
+
+  # 2
+  <span class="hljs-title">optdict</span> = </span>{}
+
+  # <span class="hljs-number">3</span>
+  @staticmethod
+  def addOptions(options, breakpoint):
+    key = str(breakpoint.<span class="hljs-type">GetID</span>())
+    <span class="hljs-type">BarOptions</span>.optdict[key] = options</pre>
+<p>Going over this step-by-step:
+</p>
+<ol>
+<li>
+<p>You’re declaring a class named <code>BarOptions</code> which inherits from type <code>object</code>. Think of <code>object</code> as Python’s equivalent for <code>NSObject</code>. This class provides base functionality and generally makes your life a little easier. It’s absolutely possible to not have a base class (just like in Swift), but some Python APIs play a little nicer when inheriting from <code>object</code>.
+</p></li>
+
+<li>
+<p>You’re declaring a class variable named <code><em>optdict</em></code>. If you were to declare an instance variable, it would have to be inside an init function. Since you’re only working with this class variable, you won’t be setting up any initialization methods for this class.
+</p></li>
+
+<li>
+<p>You’re also declaring a class method called <em>addOptions</em> (think <code>+[</code> in Objective-C or <code>class func</code> in Swift), which uniquely assigns the options that are bound to the <code>SBBreakpoint</code>’s ID.
+</p></li>
+</ol>
+
+<p>Jump down to <code>breakAfterRegex</code> and add the following line of code right before the point where you specify the callback function (i.e. the call to <code>SetScriptCallbackFunction</code>):
+</p><pre class="code-block">BarOptions.addOptions(options, breakpoint)</pre>
+<p>After you’ve added this new line of code, create a new function to evaluate the condition. Add the new function <code><em>evaluateCondition</em></code> to the bottom of <em>BreakAfterRegex.py</em>:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">evaluateCondition</span><span class="hljs-params">(debugger, condition)</span>:</span>
+  <span class="hljs-string">'''Returns True or False based upon the supplied condition.
+  You can reference the NSObject through "obj"'''</span>
+
+  <span class="hljs-comment"># 1</span>
+  res = lldb.SBCommandReturnObject()
+  interpreter = debugger.GetCommandInterpreter()
+  target = debugger.GetSelectedTarget()
+
+  <span class="hljs-comment"># 2</span>
+  expression = <span class="hljs-string">'expression -lobjc -O -- id obj = ((id){}); ((BOOL){})'</span>.format(getRegisterString(target), condition)
+  interpreter.HandleCommand(expression, res)
+
+  <span class="hljs-comment"># 3</span>
+  <span class="hljs-keyword">if</span> res.GetError():
+    print(condition)
+    print(<span class="hljs-string">'*'</span> * <span class="hljs-number">80</span> + <span class="hljs-string">'\n'</span> + res.GetError() + <span class="hljs-string">'\ncondition:'</span> + condition)
+    <span class="hljs-keyword">return</span> <span class="hljs-keyword">False</span>
+  <span class="hljs-keyword">elif</span> res.HasResult():
+    <span class="hljs-comment"># 4</span>
+    retval = res.GetOutput()
+
+    <span class="hljs-comment"># 5</span>
+    <span class="hljs-keyword">if</span> <span class="hljs-string">'YES'</span> <span class="hljs-keyword">in</span> retval:
+      <span class="hljs-keyword">return</span> <span class="hljs-keyword">True</span>
+
+  <span class="hljs-comment"># 6</span>
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">False</span></pre>
+<p>Breaking that down:
+</p>
+<ol>
+<li>
+<p>You’re creating a <code>SBCommandReturnObject</code> to handle the code being passed in from the <code>condition</code> parameter.
+</p></li>
+
+<li>
+<p>This will create and execute the custom expression that’s being passed in. Notice you’re declaring the instance variable <code><em>obj</em></code> and casting it to type <code><em>id</em></code> from the return register. This lets you conveniently reference the return value as <code>obj</code> instead of a hardware-specific register. The expression you provide will be cast into an Objective-C <code>BOOL</code>, which will either return a <code>YES</code> or <code>NO</code> output.
+</p></li>
+
+<li>
+<p>You’ll evaluate the return value, and if it contains an error, print the error out. You’re explicitly returning <code>False</code> or <code>True</code> within this function because you’ll use this return value to determine if execution should stop or not when evaluating this expression. Remember, the <code>SBBreakpoint</code> callback function <code>breakpointHandler</code> will stop execution if the function returns <code>True</code>. Execution will not stop if not <code>True</code> (i.e. <code>False</code>, <code>None</code> or no return) is returned.
+</p></li>
+
+<li>
+<p>This will assign the output to a variable named <code><em>retval</em></code> if there is one to grab.
+</p></li>
+
+<li>
+<p>It really pains me to teach expression parsing this way, since there’s a much cleaner method of evaluating objects using <code>SBValue</code>s, which you’ll learn about in the next chapter. For now, you’ll continue using the <code>SBCommandReturnObject</code> and compare the output to what you expect. If the expression is evaluated to <code>YES</code>, then pause execution.
+</p></li>
+
+<li>
+<p>If the execution returns <code>NO</code>, then just keep on executing by returning <code>False</code>.
+</p></li>
+</ol>
+
+<p>Final round of code! Find <code><em>breakpointHandler</em></code> function. Add the following code beneath the <code>thread.StepOut()</code> call:
+</p><pre class="code-block"><span class="hljs-comment"># 1</span>
+key = str(bp_loc.GetBreakpoint().GetID())
+<span class="hljs-comment"># 2</span>
+options = BarOptions.optdict[key]
+<span class="hljs-comment"># 3</span>
+<span class="hljs-keyword">if</span> options.condition:
+  <span class="hljs-comment"># 4</span>
+  condition = shlex.split(options.condition)[<span class="hljs-number">0</span>]
+  <span class="hljs-comment"># 5</span>
+  <span class="hljs-keyword">return</span> evaluateCondition(debugger, condition)</pre>
+<p>Last explanation. Yay!
+</p>
+<ol>
+<li>
+<p>The <code>bp_loc</code> is of type <code>SBBreakpointLocation</code>. This class lets you reference the initial <code>SBBreakpoint</code> by the <code><em>GetBreakpoint</em></code> method. From there, you can reference the ID, which will be a number. Therefore, you need to cast this number as a Python <code>str</code> and assign that to the variable <code><em>key</em></code>.
+</p></li>
+
+<li>
+<p>This will grab the options from the class property <code><em>optdict</em></code> and assign it to the variable <code><em>options</em></code>.
+</p></li>
+
+<li>
+<p>Check if the <code>options</code> variable contains a non-<code>None</code> reference. If there’s a valid reference, execute the logic.
+</p></li>
+
+<li>
+<p>This will unwrap the <code>condition</code> passed into the command line option. Again, you have to do a little extra work thanks to that <code>posix=False</code> mentioned earlier, but it allows you to use backslash and dash characters in our options &amp; arguments.
+</p></li>
+</ol>
+
+<ol>
+<li>
+<p>Finally, you’re calling the function <code><em>evaluateCondition</em></code> you created in the previous code snippet. You are returning the function’s return value which will influence if execution should stop or not.
+</p></li>
+</ol>
+
+<p>No more Python code (well, for this chapter...muwahahaha)! Save your work and head back to Xcode.
+</p>
+<p>Again, modify the second action in the <code>getenv</code> symbolic breakpoint. This time, change it to the following:
+</p><pre class="code-block">bar <span class="hljs-type">NSURL</span>\(.*<span class="hljs-keyword">init</span></pre>
+<p>This will breakpoint will now fire on the initialization of <code>NSURL</code>s. That weird syntax is necessary because the majority of <code>NSURL</code> initialization methods are created through categories.
+</p>
+<p>Scan for any HTTPS <code>NSURL</code>s in the console output.
+</p><div class="image-95"><img src="graphics/img115.png"  alt="" title="" /></div>
+<p>Looks like the app is hitting some Amazon S3 webservice. Use the newly created <code>--condition</code> option of the <code>bar</code> command you’ve just created to stop when an <code>NSURL</code> returns from initialization and contains <code>&quot;amazon&quot;</code> in the <code>absoluteString</code>.
+</p>
+<p>Go back after the <code>getenv</code> symbolic breakpoint and change the second action yet again to the following:
+</p><pre class="code-block">bar <span class="hljs-type">NSURL</span>\(.*<span class="hljs-keyword">init</span> -<span class="hljs-built_in">c</span> '(<span class="hljs-type">BOOL</span>)[[obj absoluteString] containsString:@<span class="hljs-string">"amazon"</span>]'</pre><div class="image-70"><img src="graphics/img116.png"  alt="" title="" /></div>
+<p>Build and run and see what happens...
+</p>
+<p>Execution will stop on the exact line containing this <code>NSURL</code> ... er... <code>URL</code>, since it stopped in the Swift context. But let’s be real, that instance is a <code>NSURL</code>.
+</p>
+<h2 class="segment-chapter">Real world example: exploring Swift return Strings with bar</h2>
+
+<p>Evaluating the return value of a Swift object in an Objective-C context is much harder, but still doable.
+</p>
+<p>You’re going to try another example. Do you remember that <code><em>fullName</em></code> method in the <code>Person</code> class? I want you to stop only when that <code>fullName</code> method returns the name <code>Ray Wenderlich</code>. I’ve heard through the grapevine that Ray gave a talk at this conference, so let’s see how we can use the <code>bar</code> command to figure this out.
+</p>
+<p>But before you go about changing our <code>getenv</code> symbolic breakpoint, you need to do a dry run. You see, Swift doesn’t like you knowing about pointers, and working with Swift strings can be a lot like working with actual <code>char *</code> or <code>unichar *</code>, depending on the context.
+</p>
+<p>Temporarily disable the <code>getenv</code> symbolic breakpoint by clicking on the breakpoint icon.
+</p>
+<p>Print the first 16 lines of <em>Person.swift</em>. In LLDB, type the following:
+</p><pre class="code-block">(lldb) source list -f Person.swift -c 16</pre>
+<p>You’ll get the following output:
+</p><pre class="code-block">   <span class="hljs-number">1</span>    
+   <span class="hljs-number">2</span>    <span class="hljs-keyword">import</span> Foundation
+   <span class="hljs-number">3</span>    <span class="hljs-keyword">import</span> CoreData
+   <span class="hljs-number">4</span>    
+   <span class="hljs-number">5</span>    <span class="hljs-meta">@objc</span>(<span class="hljs-type">Person</span>)
+   <span class="hljs-number">6</span>    <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Person</span>: <span class="hljs-title">NSManagedObject</span> </span>{
+   <span class="hljs-number">7</span>      <span class="hljs-meta">@NSManaged</span> <span class="hljs-keyword">var</span> first: <span class="hljs-type">String</span>
+   <span class="hljs-number">8</span>      <span class="hljs-meta">@NSManaged</span> <span class="hljs-keyword">var</span> last: <span class="hljs-type">String</span>
+   <span class="hljs-number">9</span>      <span class="hljs-meta">@NSManaged</span> <span class="hljs-keyword">var</span> bio: <span class="hljs-type">String</span>
+   <span class="hljs-number">10</span>     <span class="hljs-meta">@NSManaged</span> <span class="hljs-keyword">var</span> twitter: <span class="hljs-type">String</span>
+   <span class="hljs-number">11</span>     <span class="hljs-meta">@NSManaged</span> <span class="hljs-keyword">var</span> identifier: <span class="hljs-type">String</span>
+   <span class="hljs-number">12</span>     <span class="hljs-meta">@NSManaged</span> <span class="hljs-keyword">var</span> active: <span class="hljs-type">Bool</span>
+   <span class="hljs-number">13</span>     <span class="hljs-meta">@NSManaged</span> <span class="hljs-keyword">var</span> sessions: <span class="hljs-type">NSSet</span>
+   <span class="hljs-number">14</span>   
+   <span class="hljs-number">15</span>     <span class="hljs-keyword">var</span> fullName: <span class="hljs-type">String</span> {
+   <span class="hljs-number">16</span>       <span class="hljs-keyword">return</span> <span class="hljs-string">"<span class="hljs-subst">\(first)</span> <span class="hljs-subst">\(last)</span>"</span>
+   <span class="hljs-number">17</span>     }</pre>
+<p>Looking at the <code>fullName</code>, you can see it’s a computed property that only has a getter. This means that you can go after the <code>getter</code> syntax of a Swift property.
+</p>
+<p>Type the following in LLDB:
+</p><pre class="code-block">(lldb) rb fullName.getter</pre>
+<p>You’ll get the breakpoint: <code>RWDevCon.Person.fullName.getter : Swift.String</code>. Click on a workshop to trigger this breakpoint. In my case, I’ve clicked on the <em>Advanced Debugging </em><em>&amp;</em><em> Reverse Engineering</em> workshop, ’cause it sounds relevant to my interests:
+</p><div class="image-70"><img src="graphics/img117.png"  alt="" title="" /></div>
+<p>The executable will stop as the getter method of the <code>fullName</code> is triggered.
+</p>
+<p>In LLDB, step out of this function:
+</p><pre class="code-block">(lldb) finish</pre>
+<p>Inspect the return value. If x64, that’s <code><em>RAX</em></code>; if AARCH64, that’s <code><em>X0</em></code>. When in doubt, just try <code>po</code>’ing the register in the Objective-C context to see what happens.
+</p><pre class="code-block">(lldb) expression -lobjc -O -- $rax</pre>
+<p>Hmm... you’ll just get some “random number”:
+</p><pre class="code-block"><span class="hljs-number">105553116755808</span></pre>
+<p>Again, the base address of Swift strings can be thought of a C <code>char *</code> or <code>unichar *</code>. They’re a little bit more complicated than that, which you’ll understand more in the next chapter.
+</p>
+<p>Start with a <code>char *</code>. Cast it to a C <code>char *</code> to see if that works:
+</p><pre class="code-block">(lldb) expression -lobjc -O --  (char *)$rax </pre>
+<p>You’ll get the following:
+</p><pre class="code-block"><span class="hljs-string">"D"</span></pre>
+<p>There’s something fishy going on. Inspect the memory address pointed at by the RAX register.
+</p><pre class="code-block">(lldb) memory read $rax</pre>
+<div class="note">
+<p><em>Note</em>: A newly introduced Swift LLDB bug starting around lldb-900.0.57 (and might still be by the time you read this) will not let you execute the <code>memory read</code> command on a register in a Swift frame. To get around this, you can grab the actual value from <code>(lldb) register read rax</code>, then replace the <code>$rax</code> part with the actual address for <code>memory read</code>
+</p></div>
+
+<p>You’ll get output similar to the following:
+</p><pre class="code-block"><span class="hljs-number">0x600000077760</span>: <span class="hljs-number">44</span> <span class="hljs-number">00</span> <span class="hljs-number">65</span> <span class="hljs-number">00</span> <span class="hljs-number">72</span> <span class="hljs-number">00</span> <span class="hljs-number">65</span> <span class="hljs-number">00</span> 6b <span class="hljs-number">00</span> <span class="hljs-number">20</span> <span class="hljs-number">00</span> <span class="hljs-number">53</span> <span class="hljs-number">00</span> <span class="hljs-number">65</span> <span class="hljs-number">00</span>  
+<span class="hljs-number">0x600000077770</span>: 6c <span class="hljs-number">00</span> <span class="hljs-number">61</span> <span class="hljs-number">00</span> 6e <span class="hljs-number">00</span> <span class="hljs-number">64</span> <span class="hljs-number">00</span> <span class="hljs-number">65</span> <span class="hljs-number">00</span> <span class="hljs-number">72</span> <span class="hljs-number">00</span> <span class="hljs-number">01</span> <span class="hljs-number">00</span> <span class="hljs-number">00</span> <span class="hljs-number">00</span>
+
+<span class="hljs-type">D</span>.e.r.e.k. .<span class="hljs-type">S</span>.e.l.a.n.d.e.r.....</pre>
+<p>Ahah! This isn’t a <code>char *</code>, it’s a <code>unichar *</code>! Those padded 0x00s mean it’s Unichar, but if cast as a char, then it thinks the string has ended. Cast it appropriately in LLDB:
+</p><pre class="code-block">(lldb) expression -lobjc -O --  (unichar *)$rax</pre>
+<p>You’ll get the following output:
+</p><pre class="code-block">u&quot;Derek Selander\x01&quot;</pre>
+<p>This means you can take this address, use one of <code>NSString</code>’s APIs to transform the Unichar into a <code>NSString</code> and then compare it with the proper query.
+</p>
+<p>That means you get to use this lovely API though...
+</p><pre class="code-block">- (instancetype)initWithBytes:(const void *)bytes 
+                       length:(<span class="hljs-type">NSUInteger</span>)len 
+                     encoding:(<span class="hljs-type">NSStringEncoding</span>)encoding;</pre>
+<p>You have the starting address (in the return register). You need to figure out the length and encoding. The length can be determined using LLDB. Type the following:
+</p><pre class="code-block">po strlen(&quot;Derek Selander&quot;) * 2</pre>
+<p>You’re getting the length of the string and multiplying it by 2 since it covers twice the amount of bytes with UTF16. You’ll get <em>28</em> for output.
+</p>
+<p>While you’re at it, also get the length of Ray Wenderlich’s name in Unichar length:
+</p><pre class="code-block">po strlen(&quot;Ray Wenderlich&quot;) * 2</pre>
+<p>Cool, you can use <em>28</em> for both the test and the actual <code>bar</code> script.
+</p>
+<p>Now to deal with that encoding...
+</p>
+<p>Open up a new Terminal window and type the following:
+</p><pre class="code-block">open -h NSString.h</pre>
+<p>This will pop up the header file for <code>NSString</code>.
+</p><div class="image-70"><img src="graphics/img118.png"  alt="" title="" /></div>
+<p>Search for the numerical representation that represents <code><em>NSUTF16LittleEndianStringEncoding</em></code>. The numerical value of this enum will be the correct encoding you need.
+</p>
+<p>It looks like the correct value you need is <em>0x94000100</em>. I couldn’t have guessed that off the top of my head.
+</p>
+<p>You now have all the pieces you need. Jump back to the LLDB console window and type the following:
+</p><pre class="code-block">(lldb) e -lobjc -O -- [[NSString alloc] initWithBytes:$rax length:28 encoding:0x94000100]</pre>
+<p>Wow! That worked! Now you can run your <code>NSString</code> queries!
+</p>
+<p>You’ve got the info you need to make your action. Head back to the <code>getenv</code> symbolic breakpoint and give this full expression.
+</p><pre class="code-block">bar fullName.getter -c &apos;[[[NSString alloc] initWithBytes:obj length:28 encoding:0x94000100] containsString:@&quot;Ray Wenderlich&quot;]&apos;</pre>
+<p>Make sure you have zero typos or you&apos;ll be a sad panda. Oh, and re-enable the breakpoint now as well!
+</p>
+<p>Build, run, and start navigating. Click on a random event to make sure the execution doesn’t stop.
+</p>
+<p>Jump to the Saturday schedule with the 8:00 AM slot (Ray is quite the fan of early morning activities). Select <em>Server Side Swift with Perfect</em> and see what happens.
+</p>
+<p>If you typed in your breakpoint correctly, control will stop on the <code>fullName</code> getter method containing <code>&quot;Ray Wenderlich&quot;</code>.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>That was pretty intense, but you’ve learned how to incorporate options into your own Python scripts.
+</p>
+<p>In the very unlikely chance you still have energy after reading this chapter, you should implement some sort of backtrace option for the <code>bar</code> command. There are many times, when debugging, where I wish I’d known the stack trace of an interesting object!
+</p></body></html>

@@ -1,0 +1,448 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 12: Assembly and the Stack</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 12: Assembly and the Stack</h1>
+
+<p>When there are more than six parameters passed into a function, the excess parameters are passed through the stack (there’s situations when this is not true, but one thing at a time, young grasshopper). But what does <i>being passed on the stack</i> mean exactly? It’s time to take a deeper dive into what happens when a function is called from an assembly standpoint by exploring some “stack related” registers as well as the contents in the stack.
+</p>
+<p>Understanding how the stack works is useful when you’re reverse engineering programs, since you can help deduce what parameters are being manipulated in a certain function when no debugging symbols are available. In a later section, you’ll use the knowledge from this chapter to build a command in LLDB which scrapes through functions in memory to find potentially interesting classes to explore.
+</p>
+<p>Let’s begin.
+</p>
+<h2 class="segment-chapter">The stack, revisited</h2>
+
+<p>As discussed previously in Chapter 6, “Thread, Frame &amp; Stepping Around”, when a program executes, the memory is laid out so the stack starts at a “high address” and grows downward, towards a lower address; that is, towards the heap.
+</p>
+<div class="note">
+<p><em>Note</em>: In some architectures, the stack grows upwards. But for x64 and ARM for iOS devices, the two you care about, both grow the the stack downwards.
+</p></div>
+
+<p>Confused? Here’s an image to help clarify how the stack moves.
+</p><div class="image-60"><img src="graphics/img46.png"  alt="" title="" /></div>
+<p>The stack starts at a high address. How high, exactly, is determined by the operating system’s kernel. The kernel gives stack space to each running program (well, each thread).
+</p>
+<p>The stack is finite in size and increases by growing downwards in memory address space. As space on the stack is used up, the pointer to the “top” of the stack moves down from the highest address to the lowest address.
+</p>
+<p>Once the stack reaches the finite size given by the kernel, or if it crosses the bounds of the heap, the stack is said to <i>overflow</i>. This is a fatal error, often referred to as a <i>stack overflow</i>. Now you know where that website resource you often use gets its name from!
+</p>
+<h2 class="segment-chapter">Stack pointer &amp; base pointer registers</h2>
+
+<p>Two very important registers you’ve yet to learn about are the <code><em>RSP</em></code> and <code><em>RBP</em></code>. The stack pointer register, <code>RSP</code>, points to the head of the stack for a particular thread. The head of the stack will grow downwards, so the <code>RSP</code> will decrement when items are added to the stack. The <code>RSP</code> will <i>always</i> point to the head of the stack.
+</p>
+<p>Here’s a visual of the stack pointer changing when a function is called.
+</p><div class="image-100"><img src="graphics/img47.png"  alt="" title="" /></div>
+<p>In the above image, the sequence of the stack pointer follows:
+</p>
+<ol>
+<li>
+<p>The stack pointer currently points to Frame 3.
+</p></li>
+
+<li>
+<p>The code pointed to by the instruction pointer register calls a new function. The stack pointer gets updated to point to a new frame, Frame 4, which is potentially responsible for scratchspace and data inside this newly called function from the instruction pointer.
+</p></li>
+
+<li>
+<p>Execution is completed in Frame 4 and control resumes back in Frame 3. The stack pointer’s previous reference to Frame 4 gets popped off and resumes pointing to Frame 3
+</p></li>
+</ol>
+
+<p>The other important register, the base pointer register (<code>RBP</code>), has multiple uses during a function being executed. Programs use offsets from the <code>RBP</code> to access local variables or function parameters while execution is inside the method/function. This happens because the <code>RBP</code> is set to the value of the <code>RSP</code> register at the beginning of a function in the <em>function prologue</em>.
+</p>
+<p>The interesting thing here is the previous contents of the base pointer are stored on the stack <i>before</i> it’s set to the value of the <code>RSP</code> register. This is the first thing that happens in the function prologue. Since the base pointer is saved onto the stack and set to the current stack pointer, you can traverse the stack just by knowing the value in the base pointer register. A debugger does this when it shows you the stack trace.
+</p>
+<div class="note">
+<p><em>Note</em>: Some systems don’t use a base pointer, and it’s possible to compile your application to omit using the base pointer. The logic is it might be beneficial to have an extra register to use. But this means you can’t unwind the stack easily, which makes debugging much harder.
+</p></div>
+
+<p>Yeah, an image is definitely needed to help explain.
+</p><div class="image-60"><img src="graphics/img48.png"  alt="" title="" /></div>
+<p>When a function prologue is finished setting up, the contents of <code>RBP</code> will point to the previous <code>RBP</code> a stack frame lower.
+</p>
+<div class="note">
+<p><em>Note</em>: When you jump to a different stack frame by clicking on a frame in Xcode or using LLDB, both the <code>RBP</code> &amp; <code>RSP</code> registers will change values to correspond to the new frame! This is expected because local variables for a function use offsets of <code>RBP</code> to get their values.
+</p>
+<p>If the <code>RBP</code> didn’t change, you’d be unable to print local variables to that function, and the program might even crash. This might result in a source of confusion when exploring the <code>RBP</code> &amp; <code>RSP</code> registers, so always keep this in mind. You can verify this in LLDB by selecting different frames and typing <code>cpx $rbp</code> or <code>cpx $rsp</code> in the LLDB console.
+</p></div>
+
+<p>So why are these two registers important to learn about? When a program is compiled with debug information, the debug information references offsets from the base pointer register to get a variable. These offsets are given names, the same names you gave your variables in your source code.
+</p>
+<p>When a program is compiled and optimized for release, the debug information that comes packaged into the binary is removed. Although the names to the references of these variables and parameters are removed, you can still use offsets of the stack pointer and base pointer to find the location of where these references are stored.
+</p>
+<h2 class="segment-chapter">Stack related opcodes</h2>
+
+<p>So far, you’ve learned about the calling convention and how the memory is laid out, but haven’t really explored what the many opcodes actually <i>do</i> in x64 assembly. It’s time to focus on several stack related opcodes in more detail.
+</p>
+<h3 class="segment-chapter">The &apos;push&apos; opcode</h3>
+
+<p>When anything such as an <code>int</code>, Objective-C instance, Swift class or a reference needs to be saved onto the stack, the <code><em>push</em></code> opcode is used. <code>push</code> decrements the stack pointer (remember, the stack grows downward), then stores the value assigned to the memory address pointed at by the new <code>RSP</code> value.
+</p>
+<p>After a <code>push</code> instruction, the most recently pushed value will be located at the address pointed to by <code>RSP</code>. The previous value would be at <code>RSP</code> plus the size of the most recently pushed value — usually 8 bytes for 64-bit architecture.
+</p>
+<p>To see at a concrete example, consider the following opcode:
+</p><pre class="code-block">push 0x5</pre>
+<p>This would decrement the <code>RSP</code>, then store the value <code>5</code> in the memory address pointed to by <code>RSP</code>. So, in C pseudocode:
+</p><pre class="code-block">RSP = RSP - <span class="hljs-number">0x8</span> 
+*RSP = <span class="hljs-number">0x5</span></pre>
+<h3 class="segment-chapter">The &apos;pop&apos; opcode</h3>
+
+<p>The <code><em>pop</em></code> opcode is the exact opposite of the <code>push</code> opcode. <code>pop</code> takes the value from the <code>RSP</code> register and stores it to a destination. Next, the <code>RSP</code> is incremented by <code>0x8</code> because, again, as the stack gets smaller, it will grow to a higher address.
+</p>
+<p>Below is an example of <code>pop</code>:
+</p><pre class="code-block">pop rdx</pre>
+<p>This stores the value of the <code>RSP</code> register into the <code>RDX</code> register, then increments the <code>RSP</code> register. Here’s the pseudocode below:
+</p><pre class="code-block">RDX = *RSP
+RSP = RSP + <span class="hljs-number">0x8</span></pre>
+<h3 class="segment-chapter">The &apos;call&apos; opcode</h3>
+
+<p>The <code><em>call</em></code> opcode is responsible for executing a function. <code>call</code> pushes the address of where to return to after the called function completes; then jumps to the function.
+</p>
+<p>Imagine a function at <code>0x7fffb34df410</code> in memory like so:
+</p><pre class="code-block">0x7fffb34de913 &lt;+227&gt;: call   0x7fffb34df410            
+0x7fffb34de918 &lt;+232&gt;: mov    edx, eax</pre>
+<p>When an instruction is executed, first the <code>RIP</code> register is incremented, then the instruction is executed. So, when the <code>call</code> instruction is executed, the <code>RIP</code> register will increment to <code>0x7fffb34de918</code>, then execute the instruction pointed to by <code>0x7fffb34de913</code>. Since this is a <code>call</code> instruction, the <code>RIP</code> register is pushed onto the stack (just as if a <code>push</code> had been executed) then the <code>RIP</code> register is set to the value <code>0x7fffb34df410</code>, the address of the function to be executed.
+</p>
+<p>The pseudocode would look similar to the following:
+</p><pre class="code-block">RIP = <span class="hljs-number">0x7fffb34de918</span>
+RSP = RSP - <span class="hljs-number">0x8</span>
+*RSP = RIP
+RIP = <span class="hljs-number">0x7fffb34df410</span></pre>
+<p>From there, execution continues at the location <code>0x7fffb34df410</code>.
+</p>
+<p>Computers are pretty cool, aren’t they?
+</p>
+<h3 class="segment-chapter">The &apos;ret&apos; opcode</h3>
+
+<p>The <code><em>ret</em></code> opcode is the opposite of the <code>call</code> opcode, in that it pops the top value off the stack (which will be the return address pushed on by the <code>call</code> opcode, provided the assembly’s pushes and pops match) then sets the <code>RIP</code> register to this address. Thus execution goes back to where the function was called from.
+</p>
+<p>Now that you have a basic understanding of these four important opcodes, it’s time to see them in action.
+</p>
+<p>It’s <i>very</i> important to have all <code>push</code> opcodes match your <code>pop</code> opcodes, or else the stack will get out of sync. For example, if there was no corresponding <code>pop</code> for a <code>push</code>, when the <code>ret</code> happened at the end of the function, the wrong value would be popped off. Execution would return to some random place, potentially not even a valid place in the program.
+</p>
+<p>Fortunately, the compiler will take care of synchronizing your <code>push</code> and <code>pop</code> opcodes. You only need to worry about this when you’re writing your own assembly.
+</p>
+<h2 class="segment-chapter">Observing RBP &amp; RSP in action</h2>
+
+<p>Now that you have an understanding of the <code>RBP</code> and <code>RSP</code> registers, as well as the four opcodes that manipulate the stack, it’s time to see it all in action.
+</p>
+<p>In the Registers application lives a function named <code><em>StackWalkthrough(int)</em></code>. This C function takes one integer as a parameter and is written in assembly (AT&amp;T assembly, remember to be able to spot the correct location for the source and destination operands) and is located in <em>StackWalkthrough.s</em>. Open this file and have a look around; there’s no need to understand it all just now. You’ll learn how it works in a minute.
+</p>
+<p>This function is made available to Swift through a bridging header <em>Registers-Bridging-Header.h</em>, so you can call this method written in assembly from Swift.
+</p>
+<p>Now to make use of this.
+</p>
+<p>Open <em>ViewController.swift</em>, and add the following below <code>viewDidLoad()</code>:
+</p><pre class="code-block"><span class="hljs-keyword">override</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">awakeFromNib</span><span class="hljs-params">()</span></span> {
+  <span class="hljs-keyword">super</span>.awakeFromNib()
+  <span class="hljs-type">StackWalkthrough</span>(<span class="hljs-number">5</span>)
+}</pre>
+<p>This will call <code>StackWalkThrough</code> with a parameter of <code>5</code>. The <code>5</code> is simply a value used to show how the stack works.
+</p>
+<p>Before exploring <code>RSP</code> and <code>RBP</code> in depth, it’s best to get a quick overview of what is happening in <code>StackWalkthrough</code>. Create a <em>symbolic breakpoint</em> on the <code>StackWalkthrough</code> function.
+</p><div class="image-80"><img src="graphics/img49.png"  alt="" title="" /></div>
+<p>Once created, build and run.
+</p>
+<p>Xcode will break on <code>StackWalkthrough</code>. Be sure to view the StackWalkthrough function through &quot;source&quot; (even though it&apos;s assembly). Viewing the function through source will showcase the AT&amp;T assembly (because it was written in AT&amp;T ASM).
+</p>
+<p>Xcode will display the following assembly:
+</p><pre class="code-block">push  %rbp       ; Push contents of RBP onto the stack (*RSP = RBP, RSP decreases)
+
+movq  %rsp, %rbp ; RBP = RSP
+movq  $0x0, %rdx ; RDX = 0
+movq  %rdi, %rdx ; RDX = RDI
+push  %rdx       ; Push contents of RDX onto the stack (*RSP = RDX, RSP decreases)
+
+movq  $0x0, %rdx ; RDX = 0
+pop   %rdx       ; Pop top of stack into RDX (RDX = *RSP, RSP increases)
+
+pop   %rbp       ; Pop top of stack into RBP (RBP = *RSP, RSP increases)
+
+ret              ; Return from function (RIP = *RSP, RSP increases)</pre>
+<p>Comments have been added to help understand what’s happening. Read it through and try to understand it if you can. You’re already familiar with the <code>mov</code> instruction, and the rest of the assembly consists of function related opcodes you’ve just learned about.
+</p>
+<p>This function takes the integer parameter passed into it (as you’ll recall, the first parameter is passed in <code>RDI</code>), stores it into the <code>RDX</code> register, and pushes this parameter onto the stack. <code>RDX</code> is then set to <code>0x0</code>, then the value popped off the stack is stored back into the RDX register.
+</p>
+<p>Make sure you have a good mental understanding of what is happening in this function, as you’ll be exploring the registers in LLDB next.
+</p>
+<p>Back in Xcode, create a breakpoint using Xcode’s GUI on the <code>StackWalkthrough(5)</code> line in the <code>awakeFromNib</code> function of <em>ViewController.swift</em>. Leave the previous <code>StackWalkthrough</code> symbolic breakpoint alive, since you’ll want to stop at the beginning of the <code>StackWalkthrough</code> function when exploring the registers.
+</p>
+<p>Build and run and wait for the GUI breakpoint to trigger.
+</p><div class="image-100"><img src="graphics/img50.png"  alt="" title="" /></div>
+<p>Now click <em>Debug</em><em>\</em><em>Debug Workflow</em><em>\</em><em>Always Show Disassembly</em>, to show the disassembly. You’ll be greeted with scary looking stuff!
+</p><div class="image-100"><img src="graphics/img51.png"  alt="" title="" /></div>
+<p>Wow! Look at that! You’ve landed right on a <code>call</code> opcode instruction. Do you wonder what function you’re about to enter?
+</p>
+<div class="note">
+<p><em>Note</em>: If you didn&apos;t land right on the <code>call</code> instruction using the Xcode GUI breakpoint, you can either use LLDB&apos;s <em>thread step-inst</em> or more simply, <em>si</em> to single step through assembly instructions. Alternatively, you can create a GUI breakpoint on the memory address that <code>call</code>s the <code>StackWalkthrough</code> function.
+</p></div>
+
+<p>From here on out, you’ll step through every assembly instruction while printing out four registers of interest: <code>RBP</code>, <code>RSP</code>, <code>RDI</code> and <code>RDX</code>. To help with this, type the following into LLDB:
+</p><pre class="code-block">(lldb) command alias dumpreg register read rsp rbp rdi rdx</pre>
+<p>This creates the command <code><em>dumpreg</em></code> that will dump the four registers of interest. Execute <code>dumpreg</code> now:
+</p><pre class="code-block">(lldb) dumpreg</pre>
+<p>You’ll see something similar to the following:
+</p><pre class="code-block">rsp = 0x00007fff5fbfe820
+rbp = 0x00007fff5fbfe850
+rdi = 0x0000000000000005
+rdx = 0x0040000000000000</pre>
+<p>For this section, the output of <code>dumpreg</code> will be overlaid on each assembly instruction to show exactly what is happening with each of the registers during each instruction. Again, even though the values are provided for you, it’s very important you execute and understand these commands yourself.
+</p>
+<p>Your screen will look similar to the following:
+</p><div class="image-90"><img src="graphics/img52.png"  alt="" title="" /></div>
+<p>Once you jump into the function call, keep a <i>very</i> close eye on the <code>RSP</code> register, as it’s about to change once <code>RIP</code> jumps to the beginning of <code>StackWalkthrough</code>. As you’ve learned earlier, the <code>RDI</code> register will contain the value for the first parameter, which is <code>0x5</code> in this case.
+</p>
+<p>In LLDB, type the following:
+</p><pre class="code-block">(lldb) si</pre>
+<p>This is an alias for <code>thread step-inst</code>, which tells LLDB to execute the next instruction and then pause the debugger.
+</p>
+<p>You’ve now stepped into <code>StackWalkthrough</code>. Again for each step, dump out the registers using <code>dumpreg</code>.
+</p><div class="image-90"><img src="graphics/img53.png"  alt="" title="" /></div>
+<p>Take note of the difference in the <code>RSP</code> register. The value pointed at by <code>RSP</code> will now contain the return address to the previous function. For this particular example, <code>RSP</code>, which points to <code>0x7fff5fbfe758</code>, will contain the value <code>0x100002455</code> — the address immediately following the <code>call</code> in <code>awakeFromNib</code>.
+</p>
+<p>Verify this now through LLDB:
+</p><pre class="code-block">(lldb) x/gx $rsp </pre>
+<p>The output will match the address immediately following the call opcode in <code>awakeFromNib</code>.
+</p>
+<p>Next, perform an <code>si</code>, then <code>dumpreg</code> for the next instruction.
+</p><div class="image-90"><img src="graphics/img54.png"  alt="" title="" /></div>
+<p>The value of <code>RBP</code> is pushed onto the stack. This means the following two commands will produce the same output. Execute both of them to verify.
+</p><pre class="code-block">(lldb) x/gx $rsp </pre>
+<p>This looks at the memory address pointed at by the stack pointer register.
+</p>
+<div class="note">
+<p><em>Note</em>: Wait, I just threw a new command at you with no context. The <code>x</code> command is a shortcut for the <code>memory read</code> command.
+</p>
+<p>The <code>/gx</code> says to format the memory in a giant word (8 bytes, remember that terminology from Chapter 11, “Assembly &amp; Memory”?) in hexadecimal format.
+</p></div>
+
+<div class="note">
+<p>The weird formatting is due to the popularity of this command in <code>gdb</code>, which saw this command syntax ported into <code>lldb</code> to make the transition from debuggers easier.
+</p></div>
+
+<p>Now look at the value in the base pointer register.
+</p><pre class="code-block">(lldb) p/x $rbp</pre>
+<p>Next, step into the next instruction, using <code>si</code> again:
+</p><div class="image-90"><img src="graphics/img55.png"  alt="" title="" /></div>
+<p>The base pointer is assigned to the value of the stack pointer. Verify both have the same value using <code>dumpreg</code> as well as the following LLDB command:
+</p><pre class="code-block">(lldb) p (BOOL)($rbp == $rsp)</pre>
+<p>It’s important you put parentheses around the expression, else LLDB won’t parse it correctly.
+</p>
+<p>Execute <code>si</code> and <code>dumpreg</code> again. This time it looks like the following:
+</p><div class="image-90"><img src="graphics/img56.png"  alt="" title="" /></div>
+<p><code>RDX</code> is cleared to 0.
+</p>
+<p>Execute <code>si</code> and <code>dumpreg</code> again. This time the output looks the following:
+</p><div class="image-90"><img src="graphics/img57.png"  alt="" title="" /></div>
+<p><code>RDX</code> is set to <code>RDI</code>. You can verify both have the same value with <code>dumpreg</code> again.
+</p>
+<p>Execute <code>si</code> and <code>dumpreg</code>. This time it looks the following:
+</p><div class="image-90"><img src="graphics/img58.png"  alt="" title="" /></div>
+<p><code>RDX</code> is pushed onto the stack. This means the stack pointer was decremented, and <code>RSP</code> points to a value which will point to the value of <code>0x5</code>. Confirm that now:
+</p><pre class="code-block">(lldb) p/x $rsp </pre>
+<p>This gives the current value pointed at <code>RSP</code>. What does the value here point to?
+</p><pre class="code-block">(lldb) x/gx $rsp </pre>
+<p>You’ll get the expected <code>0x5</code>. Type <code>si</code> again to execute the next instruction:
+</p><div class="image-90"><img src="graphics/img59.png"  alt="" title="" /></div>
+<p><code>RDX</code> is set to <code>0x0</code>. Nothing too exciting here, move along... move along. Type <code>si</code> and <code>dumpreg</code> again:
+</p><div class="image-90"><img src="graphics/img60.png"  alt="" title="" /></div>
+<p>The top of the stack is popped into <code>RDX</code>, which you know was recently set to <code>0x5</code>. The <code>RSP</code> is incremented by <code>0x8</code>. Type <code>si</code> and <code>dumpreg</code> again:
+</p><div class="image-90"><img src="graphics/img61.png"  alt="" title="" /></div>
+<p>The base pointer is popped off of the stack and reassigned back to the value it originally had when entering this function. The calling convention specifies <code>RBP</code> should remain consistent across function calls. That is, the <code>RBP</code> can’t change to a different value once it leaves a function, so we’re being a good citizen and restoring its value.
+</p>
+<p>Onto the <code>ret</code> opcode. Keep an eye out for the <code>RSP</code> value about to change. Type <code>si</code> and <code>dumpreg</code> again:
+</p><div class="image-90"><img src="graphics/img62.png"  alt="" title="" /></div>
+<p>The return address was pushed off the stack and set to the <code>RIP</code> register; you know this because you’ve gone back to where the function was called. Control then resumes in <code>awakeFromNib</code>,
+</p>
+<p>Wowza! That was fun! A simple function, but it illustrates how the stack works through <code>call</code>, <code>push</code>, <code>pop</code> and <code>ret</code> instructions.
+</p>
+<h2 class="segment-chapter">The stack and 7+ parameters</h2>
+
+<p>As described in Chapter 10, the calling convention for x86_64 will use the following registers for function parameters in order: <code>RDI</code>, <code>RSI</code>, <code>RDX</code>, <code>RCX</code>, <code>R8</code>, <code>R9</code>. When a function requires more than six parameters, the stack needs to be used.
+</p>
+<div class="note">
+<p><em>Note</em>: The stack may also need to be used when a large struct is passed to a function. Each parameter register can only hold 8 bytes (on 64-bit architecture), so if the struct needs more than 8 bytes, it will need to be passed on the stack as well. There are strict rules defining how this works in the calling convention, which all compilers must adhere to.
+</p></div>
+
+<p>Open <em>ViewController.swift</em> and find the function named <code>executeLotsOfArguments(one:two:three:four:five:six:seven:eight:nine:ten:)</code>. You used this function in Chapter 10 to explore the registers. You’ll use it again now to see how parameters 7 and beyond get passed to the function.
+</p>
+<p>Add the following code to the end of <code>viewDidLoad</code>:
+</p><pre class="code-block"><span class="hljs-number">_</span> = <span class="hljs-keyword">self</span>.executeLotsOfArguments(one: <span class="hljs-number">1</span>, two: <span class="hljs-number">2</span>, three: <span class="hljs-number">3</span>,
+                                four: <span class="hljs-number">4</span>, five: <span class="hljs-number">5</span>, six: <span class="hljs-number">6</span>,
+                                seven: <span class="hljs-number">7</span>, eight: <span class="hljs-number">8</span>, nine: <span class="hljs-number">9</span>,
+                                ten: <span class="hljs-number">10</span>)</pre>
+<p>Next, using the Xcode GUI, create a breakpoint on the line you just added. Build and run the app, and wait for this breakpoint to hit. You should see the disassembly view again, but if you don’t, use the <em>Always Show Disassembly</em> option.
+</p><div class="image-90"><img src="graphics/img63.png"  alt="" title="" /></div>
+<p>As you’ve learned in the <em>Stack Related Opcodes</em> section, <code>call</code> is responsible for the execution of a function. Since there’s only one <code>call</code> opcode between where <code>RIP</code> is right now and the end of <code>viewDidLoad</code>, this means this <code>call</code> must be the one responsible for calling <code>executeLotsOfArguments(one:two:three:four:five:six:seven: eight:nine:ten:)</code>.
+</p>
+<p>But what are all the rest of the instructions before <code>call</code>? Let’s find out.
+</p>
+<p>These instructions set up the stack as necessary to pass the additional parameters. You have your usual 6 parameters being put into the appropriate registers, as seen by the instructions before where <code>RIP</code> is now, from <code>mov edx, 0x1</code> onwards.
+</p>
+<p>But parameters 7 and beyond need to be passed on the stack. This is done with the following instructions:
+</p><pre class="code-block"><span class="hljs-number">0x1000013e2</span> &lt;+<span class="hljs-number">178</span>&gt;: mov    qword ptr [rsp], <span class="hljs-number">0x7</span>
+<span class="hljs-number">0x1000013ea</span> &lt;+<span class="hljs-number">186</span>&gt;: mov    qword ptr [rsp + <span class="hljs-number">0x8</span>], <span class="hljs-number">0x8</span>
+<span class="hljs-number">0x1000013f3</span> &lt;+<span class="hljs-number">195</span>&gt;: mov    qword ptr [rsp + <span class="hljs-number">0x10</span>], <span class="hljs-number">0x9</span>
+<span class="hljs-number">0x1000013fc</span> &lt;+<span class="hljs-number">204</span>&gt;: mov    qword ptr [rsp + <span class="hljs-number">0x18</span>], <span class="hljs-number">0xa</span></pre>
+<p>Looks scary, doesn’t it? I’ll explain.
+</p>
+<p>The brackets containing <code>RSP</code> and an optional value indicate a dereference, just like a <code>*</code> would in C programming. The first line above says “put <code>0x7</code> into the memory address pointed to by <code>RSP</code>.” The second line says “put <code>0x8</code> into the memory address pointed to by <code>RSP</code> plus <code>0x8</code>.” And so on.
+</p>
+<p>This is placing values onto the stack. But take note the values are not explicitly pushed using the <code>push</code> instruction, which would decrease the <code>RSP</code> register. Why is that?
+</p>
+<p>Well, as you’ve learned, during a <code>call</code> instruction the return address is pushed onto the stack. Then, in the function prologue, the base pointer is pushed onto the stack, and then the base pointer gets set to the stack pointer.
+</p>
+<p>What you haven’t learned yet is the compiler will actually make room on the stack for “scratch space”. That is, the compiler allocates space on the stack for local variables in a function as necessary.
+</p>
+<p>You can easily determine if extra scratch space is allocated for a stack frame by looking for the <code>sub rsp, VALUE</code> instruction in the function prologue. For example, click on the <code>viewDidLoad</code> stack frame and scroll to the top. Observe how much scratch space has been created:
+</p><div class="image-90"><img src="graphics/img64.png"  alt="" title="" /></div>
+<p>The compiler has been a little bit clever here; instead of doing lots of pushes, it knows it has allocated some space on the stack for itself, and fills in values before the function call passing these extra parameters. Individual <code>push</code> instructions would involve more writes to <code>RSP</code>, which would be less efficient.
+</p>
+<p>Time to look at this scratch space in more depth.
+</p>
+<h2 class="segment-chapter">The stack and debugging info</h2>
+
+<p>The stack is not only used when calling functions, but it’s also used as a scratch space for a function’s local variables. Speaking of which, how does the debugger know which addresses to reference when printing out the names of variables that belong to that function?
+</p>
+<p>Let’s find out!
+</p>
+<p>Clear all the breakpoints you’ve set and create a new Symbolic breakpoint on <code>executeLotsOfArguments</code>.
+</p><div class="image-75"><img src="graphics/img65.png"  alt="" title="" /></div>
+<p>Build and run the app, then wait for the breakpoint to hit.
+</p>
+<p>As expected, control should stop at the ever-so-short name of a function: <code>executeLotsOfArguments(one:two:three:four:five:six:seven:eight:nine:ten:)</code>, from here on, now referred to as <code>executeLotsOfArguments</code>, because its full name is a bit of a mouthful!
+</p>
+<p>In the lower right corner of Xcode, click on <em>Show the Variables View</em>:
+</p><div class="image-100"><img src="graphics/img66.png"  alt="" title="" /></div>
+<p>From there, look at the value pointed at by the <code>one</code> variable... it definitely ain’t holding the value of <code>0x1</code> at the moment. This value seems to be gibberish!
+</p>
+<p>Why is <code>one</code> referencing a seemingly random value?
+</p>
+<p>The answer is stored by the <em>DWARF Debugging Information</em> embedded into the debug build of the Registers application. You can dump this information to help give you insight into what the <code>one</code> variable is referencing in memory.
+</p>
+<p>In LLDB, type the following:
+</p><pre class="code-block">(lldb) image dump symfile Registers</pre>
+<p>You’ll get a crazy amount of output. Search for (Cmd + F) the word <em>&quot;</em><em>one&quot;</em>; include the quotes within your search.
+</p>
+<p>Below is a (very) truncated output that includes the relevant information:
+</p><pre class="code-block">Swift.String, type_uid = 0x300000222
+0x7f9b4633a988:     Block{0x300000222}, ranges = [0x1000035e0-0x100003e7f)
+0x7f9b48171a20:       Variable{0x30000023f}, name = &quot;one&quot;, type = {d50e000003000000} 0x00007f9b4828d2a0 (Swift.Int), scope = parameter, decl = ViewController.swift:39, location =  DW_OP_fbreg(-32)</pre>
+<p>Based upon the output, the variable named <code>one</code> is of type <em>Swift.Int</em>, found in <code>executeLotsOfArguments</code>, whose location can be found at <em>DW</em><em>_</em><em>OP</em><em>_</em><em>fbreg(-32)</em>. This rather obfuscated code actually means base pointer minus 40, i.e. <code>RBP - 32</code>. Or in hexadecimal, <code>RBP - 0x20</code>.
+</p>
+<p>This is important information. It tells the debugger the variable called <code>one</code> can always be found in this memory address. Well, not always, but always when that variable is valid, i.e. it’s in scope.
+</p>
+<p>You may wonder why it can’t just be <code>RDI</code>, since that’s where the value is passed to the function, and it’s also the first parameter. Well, <code>RDI</code> may need to be reused later on within the function, so using the stack is a safer bet for storage.
+</p>
+<p>The debugger should still be stopped on <code>executeLotsOfArguments</code>. Make sure you’re viewing the <em>Always Show Disassembly</em> output and hunt for the assembly. It should be line 16:
+</p><pre class="code-block">mov    qword ptr [rbp - 0x20], rdi</pre>
+<p>Once you’ve found it in the assembly output of <code>executeLotsOfArguments</code>, create a breakpoint on this line of assembly.
+</p>
+<p>Continue execution so LLDB will stop on this line of assembly.
+</p><div class="image-90"><img src="graphics/img67.png"  alt="" title="" /></div>
+<p>Try printing out the output of <code>one</code> in LLDB:
+</p><pre class="code-block">(lldb) po one</pre>
+<p>Gibberish, still. Hmph.
+</p>
+<p>Remember, <code>RDI</code> will contain the first parameter passed into the function. So to make the debugger be able to see the value that <code>one</code> should be, <code>RDI</code> needs to be written to the address where <code>one</code> is stored. In this case, <code>RBP - 0x20</code>.
+</p>
+<p>Now, perform an assembly instruction step in LLDB:
+</p><pre class="code-block">(lldb) si</pre>
+<p>Print the value of <code>one</code> again.
+</p><pre class="code-block">(lldb) po one</pre>
+<p>Awwww.... yeah! It’s working! The value <code>one</code> is referencing is correctly holding the value <code>0x1</code>.
+</p>
+<p>You may be wondering what happens if <code>one</code> changes. Well, <code>RBP - 0x20</code> needs to change in that case too. This would potentially be another instruction needed to write it there as well as wherever the value is used. This is why debug builds are so much slower than release builds.
+</p>
+<h2 class="segment-chapter">Stack exploration takeaways</h2>
+
+<p>Don’t worry. This chapter is almost done. But there are some very important takeaways that should be remembered from your stack explorations.
+</p>
+<p>Provided you’re in a function, and the function has finished executing the function prologue, the following items will hold true to x64 assembly:
+</p>
+<ul>
+<li>
+<p><code>RBP</code> will point to the start of the stack frame for this function.
+</p></li>
+
+<li>
+<p><code>*RBP</code> will contain the address of the start of the previous stack frame. (Use <code>x/gx $rbp</code> in LLDB to see it).
+</p></li>
+
+<li>
+<p><code>*(RBP + 0x8)</code> will point to the return address to the previous function in the stack trace (Use <code>x/gx &apos;$rbp + 0x8&apos;</code> in LLDB to see it).
+</p></li>
+
+<li>
+<p><code>*(RBP + 0x10)</code> will point to the 7th parameter (if there is one).
+</p></li>
+
+<li>
+<p><code>*(RBP + 0x18)</code> will point to the 8th parameter (if there is one).
+</p></li>
+
+<li>
+<p><code>*(RBP + 0x20)</code> will point to the 9th parameter (if there is one).
+</p></li>
+
+<li>
+<p><code>*(RBP + 0x28)</code> will point to the 10th parameter (if there is one).
+</p></li>
+
+<li>
+<p><code>RBP - X</code> where <code>X</code> is multiples of <code>0x8</code>, will reference local variables to that function.
+</p></li>
+</ul>
+
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>Now that you’re familiar with the <code>RBP</code> and <code>RSP</code> registers, you’ve got a homework assignment!
+</p>
+<p>Attach LLDB to a program (any program, source or no source) and traverse the stack frame using only the <code>RBP</code> register. Create a breakpoint on an easily triggerable method. One good example is <code>-[NSView hitTest:]</code>, if you attach to a macOS application such as Xcode, and click on a view.
+</p>
+<p>It’s important to ensure the breakpoint you choose to add is <i>not</i> a Swift function. You’re going to inspect registers, — and recall you can’t (easily) do this in the Swift context.
+</p>
+<p>Once the breakpoint has been triggered, make sure you’re on frame 0 by typing the following into LLDB:
+</p><pre class="code-block">(lldb) f 0 </pre>
+<p>The <code>f</code> command is an alias for <code>frame select</code>.
+</p>
+<p>You should see the following two instructions at the top of this function:
+</p><pre class="code-block">push   rbp
+mov    rbp, rsp</pre>
+<p>These instructions form the start of the function prologue and push <code>RBP</code> onto the stack and then set <code>RBP</code> to <code>RSP</code>.
+</p>
+<p>Step over both of these instructions using <code>si</code>.
+</p>
+<p>Now the base pointer is set up for this stack frame, you can traverse the stack frames yourself by inspecting the base pointer.
+</p>
+<p>Execute the following in LLDB:
+</p><pre class="code-block">(lldb) p uintptr_t $Previous_RBP = *(uintptr_t *)$rsp</pre>
+<p>So now <code>$Previous_RBP</code> equals the old <code>RBP</code>, i.e. the start of the stack frame from the function that called this one.
+</p>
+<p>Recall the first thing on the stack frame is the address to where the function should return. So you can find out where the <i>previous</i> function will return to. This will therefore be where the debugger is stopped in Frame 2.
+</p>
+<p>To find this out and check that you’re right, execute the following in LLDB:
+</p><pre class="code-block">(lldb) x/gx &apos;$Previous_RBP + 0x8&apos;</pre>
+<p>This will print something like this:
+</p><pre class="code-block">0x7fff5fbfd718: 0x00007fffa83ed11b</pre>
+<p>Confirm this address equals the return address in Frame 1 with LLDB:
+</p><pre class="code-block">(lldb) f 2</pre>
+<p>It will look something like this, depending on what you decided to set the initial breakpoint in:
+</p><pre class="code-block">frame #2: 0x00007fffa83ed11b AppKit`-[NSWindow _setFrameCommon:display:stashSize:] + 3234
+AppKit`-[NSWindow _setFrameCommon:display:stashSize:]:
+    0x7fffa83ed11b &lt;+3234&gt;: xor    ebx, ebx
+    0x7fffa83ed11d &lt;+3236&gt;: mov    rsi, qword ptr [rip + 0x1c5a9d8c] ; &quot;_bindingAdaptor&quot;
+    0x7fffa83ed124 &lt;+3243&gt;: mov    rdi, r12
+    0x7fffa83ed127 &lt;+3246&gt;: call   qword ptr [rip + 0x1c319f53] ; (void *)0x00007fffbee77b40: objc_msgSend</pre>
+<p>The first address that it spits out should match the output of your earlier <code>x/gx</code> command.
+</p>
+<p>Good luck and may the assembly be with you!
+</p></body></html>

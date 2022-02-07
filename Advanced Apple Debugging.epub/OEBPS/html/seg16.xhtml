@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 9: Regex Commands</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 9: Regex Commands</h1>
+
+<p>In the previous chapter, you learned about the <code>command alias</code> command as well as how to persist commands through the <code>lldbinit</code> file. Unfortunately, <code>command alias</code> has some limitations.
+</p>
+<p>An alias created this way will work great if you’re trying to execute a static command, but usually you’d want to feed input into a command in order to get some useful output.
+</p>
+<p>Where <code>command alias</code> falls short is it essentially <i>replaces</i> the alias with the actual command. What if you wanted to have input supplied into the middle of a command, such as a command to get the class of a given object instance, providing the object as an input?
+</p>
+<p>One horribly ugly solution would be using a <code>command alias</code> to do the following (please don’t <i>ever</i> do this):
+</p><pre class="code-block">(lldb) po id $INPUT = @&quot;input test&quot;; 
+(lldb) command alias getcls po -l objc -O -- [$INPUT class]</pre>
+<p>This creates a temporary variable in LLDB called <code>$INPUT</code> then uses <code>$INPUT</code> to get the class. But this is awful, not to mention ugly. You’d have to redeclare <code>$INPUT</code> every time, which completely negates the point of using a shorthand convenience command in the first place!
+</p>
+<p>However, don’t despair — there <i>is</i> an elegant solution to supplying input.
+</p>
+<h2 class="segment-chapter">command regex</h2>
+
+<p>The LLDB command <code><em>command regex</em></code> acts much like <code>command alias</code>, except you can provide a regular expression for input which will be parsed and applied to the action part of the command.
+</p>
+<p><code>command regex</code> takes an input syntax that looks similar to the following:
+</p><pre class="code-block">s/&lt;regex&gt;/&lt;subst&gt;/</pre>
+<p>This is a normal regular expression. It starts with &apos;<code>s/</code>&apos;, which specifies a stream editor input to use the <em>substitute command</em>. The <code>&lt;regex&gt;</code> part is the bit that specifies what should be replaced. The <code>&lt;subst&gt;</code> part says what to replace it with.
+</p>
+<div class="note">
+<p><em>Note</em>: This syntax is derived from the <em>sed</em> Terminal command. This is important to know, because if you’re experimenting using advanced patterns, you can check the <em>man</em> pages of <code>sed</code> to see what&apos;s possible within the substitute formatting syntax.
+</p></div>
+
+<p>Time to look at a concrete example. Open up the <em>Signals</em> Xcode project. Build and run, then pause the application in the debugger. Once the LLDB console is up and ready to receive input, enter the following command in LLDB:
+</p><pre class="code-block">(lldb) command regex rlook &apos;s/(.+)/image lookup -rn %1/&apos;</pre>
+<p>This command you’ve entered will make your image regex searches much easier. You’ve created a new command called <code>rlook</code>. This new command takes everything after the <code>rlook</code> and prefixes it with <code>image lookup -rn</code>. It does this through a regex with a single matcher (the parentheses) which matches on one or more characters, and replaces the whole thing with <code>image lookup -rn %1</code>. The <code>%1</code> specifies the contents of the matcher.
+</p>
+<p>So, for example, if you enter this:
+</p><pre class="code-block">rlook FOO</pre>
+<p>LLDB will actually execute the following:
+</p><pre class="code-block">image lookup -rn FOO</pre>
+<p>Now, instead of having to type the soul-crushingly long <code>image lookup -rn</code>, you can just type <code>rlook</code>!
+</p>
+<p>But wait, it gets better. Provided there are no conflicts with the characters <code>rl</code>, you can simply use that instead. You can specify any command, be it built-in or your own, by using any prefix which is not shared with another command.
+</p>
+<p>This means you can easily search for methods like <code>viewDidLoad</code> using a much more convenient amount of typing. Try it out now:
+</p><pre class="code-block">(lldb) rl viewDidLoad </pre>
+<p>This will produce all the <code>viewDidLoad</code> implementations across all modules in the current executable. Try limiting it to only code in the Signals app:
+</p><pre class="code-block">(lldb) rl viewDidLoad Signals</pre>
+<p>Now you’re satisfied with the command, add the following line of code to your <code>~/.lldbinit</code> file:
+</p><pre class="code-block">command regex rlook &apos;s/(.+)/image lookup -rn %1/&apos;</pre>
+<div class="note">
+<p><em>Note</em>: The best way to implement a regex command is to use LLDB while a program is running. This lets you iterate on the command regex (by redeclaring it if you’re not happy with it) and test it out without having to relaunch LLDB. Once you’re happy with the command, add it to your ~/.lldbinit file so it will be available every time LLDB starts up.
+</p></div>
+
+<p>Now the <code>rlook</code> command will be available to you from here on out, resulting in no more painful typing of the full <code>image lookup -rn</code> command. Yay!
+</p>
+<h2 class="segment-chapter">Executing complex logic</h2>
+
+<p>Time to take the <code>command regex</code> up a level. You can actually use this command to execute multiple commands for a single alias. While LLDB is still paused, implement this new command:
+</p><pre class="code-block">(lldb) command regex -- tv 's/(.+)/expression -l objc -<span class="hljs-type">O</span> -- @<span class="hljs-keyword">import</span> QuartzCore; [%1 setHidden:!(BOOL)[%1 isHidden]]; (void)[CATransaction flush];/'</pre>
+<p>This complicated, yet useful command, will create a command named <code><em>tv</em></code> (toggle view), which toggles a UIView (or NSView) on or off while the debugger is paused.
+</p>
+<p>Packed into this command are three separate lines of code:
+</p>
+<ol>
+<li>
+<p><code>@import QuartzCore</code> imports the QuartzCore framework into the debugger’s address space. This is required because the debugger won’t understand what code you’re executing until it’s declared. You’re about to execute code from the QuartzCore framework, so just in case it hasn’t been imported yet, you’re doing it now.
+</p></li>
+
+<li>
+<p><code>[%1 setHidden:!(BOOL)[%1 isHidden]];</code> toggles the view to either hidden or visible, depending what the previous state was. Note that <code>isHidden</code> doesn’t know the return type, so you need to cast it to an Objective-C <code>BOOL</code>
+</p></li>
+
+<li>
+<p>The final command, <code>[CATransaction flush]</code>, will flush the CATransaction queue. Manipulating the UI in the debugger will normally mean the screen will not reflect any updates until the debugger resumes execution. However, this method will update the screen resulting in LLDB not needing to <code>continue</code> in order to show visual changes.
+</p></li>
+</ol>
+
+<div class="note">
+<p><em>Note</em>: Due to the limitations of the input params, specifying multiline input is not allowed so you have to join all the commands onto one line. This is ugly but necessary when crafting these regex commands. However, if you ever do this in actual Objective-C/Swift source code, may the Apple Gods punish you with extra-long app review times!
+</p></div>
+
+<p>Provided LLDB is still paused, execute this newly created <code>tv</code> command:
+</p><pre class="code-block">(lldb) tv [[[UIApp keyWindow] rootViewController] view]</pre><div class="image-70"><img src="graphics/img29.png"  alt="" title="" /></div>
+<p>Bring up the Simulator to verify the view has disappeared.
+</p>
+<p>Now simply press <em>Enter</em> in the LLDB console, as LLDB will repeat the last command you’ve entered. The view will flash back to normal.
+</p>
+<p>Now that you’re done implementing the <code>tv</code> command, add it to your <code>~/.lldbinit</code> file:
+</p><pre class="code-block">command regex -- tv 's/(.+)/expression -l objc -<span class="hljs-type">O</span> -- @<span class="hljs-keyword">import</span> QuartzCore; [%1 setHidden:!(BOOL)[%1 isHidden]]; (void)[CATransaction flush];/'</pre>
+<h2 class="segment-chapter">Chaining regex inputs</h2>
+
+<p>There’s a reason why that weird stream editor input was chosen for using this command: this format lets you easily specify multiple actions for the same command. When given multiple commands, the regex will try to match each input. If the input matches, that particular <code>&lt;subst&gt;</code> is applied to the command. If the input doesn’t match for a particular stream, it’ll go to the next command and see if the regex can match that input.
+</p>
+<p>It’s generally necessary to use the Objective-C context when working with objects in memory and registers. Also, anything that begins with the square open bracket or the &apos;@&apos; character is (likely) Objective-C. This is because Swift makes it difficult to work with memory, and it won’t let you access registers, nor do Swift expressions usually ever begin with an open bracket or &apos;@&apos; character.
+</p>
+<p>You can use this information to automatically detect which context you need to use for a given input.
+</p>
+<p>Let’s see how you’d you go about building a command which gets the class information out of an object, which honors the above requirements.
+</p>
+<ul>
+<li>
+<p>In Objective-C, you’d use <code><em>[objcObject class]</em></code>.
+</p></li>
+
+<li>
+<p>In Swift, you’d use <code><em>type(of: swiftObject)</em></code>.
+</p></li>
+</ul>
+
+<p>In Xcode, create a Symbolic breakpoint on <code>Signals.MasterViewController.viewDidLoad() -&gt; ()</code> (make sure to keep the spacing).
+</p><div class="image-50"><img src="graphics/img30.png"  alt="" title="" /></div>
+<p>Build and run, then wait for the breakpoint to be triggered. As usual, head on over to the debugger.
+</p>
+<p>First, build out the Objective-C implementation of this new command, <code><em>getcls</em></code>.
+</p><pre class="code-block">(lldb) command regex getcls &apos;s/(([0-9]|\$|\@|\[).*)/cpo [%1 class]/&apos;</pre>
+<p>Wow, that regex makes the eyes blur. Time to break it down:
+</p>
+<p>At first, there’s an inner grouping saying the following characters can be used to match the start:
+</p>
+<ul>
+<li>
+<p><code>[0-9]</code> means the numbers from 0-9 can be used.
+</p></li>
+
+<li>
+<p><code>\$</code> means the literal character &apos;$&apos; will be matched
+</p></li>
+
+<li>
+<p><code>\@</code> means the literal character &apos;@&apos; will be matched
+</p></li>
+
+<li>
+<p><code>\[</code> means the literal character &apos;[&apos; will be matched
+</p></li>
+</ul>
+
+<p>Any characters that start with the above will generate a match. Following that is <code>.*</code> which means zero or more characters will produce a match.
+</p>
+<p>Overall, this means that a number, <code>$</code>, <code>@</code>, or <code>[</code>, followed by any characters will result in the command matching and running <code>cpo [%1 class]</code>. Once again, <code>%1</code> is replaced with the first matcher from the regex. In this case, it’s the entire command. The inner matcher (matching a number, <code>$</code>, or so on) would be <code>%2</code>.
+</p>
+<p>Try throwing a couple of commands at the <code>getcls</code> command to see how it works:
+</p><pre class="code-block">(lldb) getcls @&quot;hello world&quot;
+__NSCFString
+
+(lldb) getcls @[@&quot;hello world&quot;]
+__NSSingleObjectArrayI
+
+(lldb) getcls [UIDevice currentDevice]
+UIDevice
+
+(lldb) cpo [UIDevice currentDevice]
+&lt;UIDevice: 0x60800002b520&gt;
+
+(lldb) getcls 0x60800002b520
+UIDevice</pre>
+<p>Awesome!
+</p>
+<p>However, this only handles references that make sense in the Objective-C context and that match your command. For example, try the following:
+</p><pre class="code-block">(lldb) getcls self</pre>
+<p>You’ll get an error:
+</p><pre class="code-block">error: Command contents &apos;self&apos; failed to match any regular expression in the &apos;getcls&apos; regex command.</pre>
+<p>This is because there was no matching regex for the input you provided. Let’s add one which catches other forms of input to <code>getcls</code>. Type the following into LLDB now:
+</p><pre class="code-block">(lldb) command regex getcls &apos;s/(([0-9]|\$|\@|\[).*)/cpo [%1 class]/&apos; &apos;s/(.+)/expression -l swift -O -- type(of: %1)/&apos;</pre>
+<p>This looks a bit more complex, but it’s not too bad. The first part of the command is the same as you added before. But now you’ve added another regex to the end. This one is a catch-all, just like the <code>rlook</code> command you added. This catch-all simply calls <code>type(of:)</code> with the input as the parameter.
+</p>
+<p>Try executing the command again for <code>self</code>:
+</p><pre class="code-block">(lldb) getcls self</pre>
+<p>You’ll now get the expected <code>Signals.MasterViewController</code> output. Since you made the Swift context as a catch-all, you can use this command in interesting ways.
+</p><pre class="code-block">(lldb) getcls self .title </pre>
+<p>Notice the space in there, and it still works. This is because you told the Swift context to quite literally take anything except newlines.
+</p>
+<p>Once, you’re done playing with this new and improved <code>getcls</code> command, be sure to add it to your <code>~/.lldbinit</code> file.
+</p>
+<h2 class="segment-chapter">Supplying multiple parameters</h2>
+
+<p>The final party trick you’ll explore in <code>command regex</code> is supplying multiple parameters to <code>command regex</code>. However, before you do that, revisit the first command:
+</p><pre class="code-block">(lldb) command regex rlook &apos;s/(.+)/image lookup -rn %1/&apos;</pre>
+<p>Take a look at the <code>(.+)</code>. The parentheses around this make it what is known as a <em>capture group</em>. The <code>%1</code> in the right hand side of the substitution (the replacement) indicates that the <code>%1</code> should be replaced with the first capture group. Therefore this whole regular expression means that the entire text is captured, and <code>image lookup -rn</code> is added before it.
+</p>
+<p>By supplying more capture groups, you can add more parameters to parse.
+</p>
+<p>Let&apos;s start with something nice and easy: reversing the words and outputting them in a <code>NSString</code>.
+</p>
+<p>In LLDB, type the following:
+</p><pre class="code-block">(lldb) command regex flip &apos;s/(\w+) (\w+)/expression -lobjc -O -- @&quot;%2 %1&quot;/&apos;</pre>
+<p>And then give this command a whirl:
+</p><pre class="code-block">(lldb) flip hello world</pre>
+<p>You&apos;ll get the expected <code>world hello</code>.
+</p>
+<p>It works by using two capture groups this time. The order is then swapped in the replacement.
+</p>
+<p>But what if you typed in something like <code>flip hello world</code>, or something with a whole bunch of tabs/spaces between the two words?
+</p><pre class="code-block">(lldb) flip hello     world
+error: Command contents &apos;hello    world&apos; failed to match any regular expression in the &apos;flip&apos; regex command.</pre>
+<p>That makes sense. You need to augment the regex to take an arbitrary number of spaces/tabs. The <em>\</em><em>s</em> space meta character to the rescue!
+</p>
+<p>Change the command to the following in LLDB:
+</p><pre class="code-block">(lldb) command regex flip &apos;s/(\w+)\s+(\w+)/expression -lobjc -O -- @&quot;%2 %1&quot;/&apos;</pre>
+<p>Now try the following with whatever amount of spaces and tabs you see fit:
+</p><pre class="code-block">(lldb) flip    hello              world
+world hello</pre>
+<p>Boom.
+</p>
+<p>As you can see, adding multiple parameters quickly ups the complexity of the regular expression. By combining multiple capture groups with multiple chained groups, you can make a rather versatile command regex to handle all types of optional and required input.
+</p>
+<p>However, that&apos;s going to look really, really ugly since all of this needs to be declared on one line.
+</p>
+<p>Fortunately, LLDB has the <em>script bridging</em> interface — a fully featured Python implementation for creating advanced LLDB commands to do your debugging bidding. You’ll take an in depth look at script bridging in the 4th section of this book.
+</p>
+<p>For now, simply use either <code>command alias</code> or <code>command regex</code> to suit your debugging needs.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>Go back to the regex commands you’ve created in this chapter and add <em>syntax</em> and <em>help</em> help documentation.
+</p>
+<p>You’ll thank yourself for this documentation about your command’s functionality, when it’s 11 PM on a Friday night and you just want to figure out this gosh darn bug.
+</p></body></html>

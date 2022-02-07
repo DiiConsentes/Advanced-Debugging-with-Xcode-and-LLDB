@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 17: Hello Script Bridging</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 17: Hello Script Bridging</h1>
+
+<p>LLDB has several ways you can use to create your own customized commands. The first way is through the easy-to-use <code>command alias</code>  you saw in Chapter 8, “Persisting and Customizing”. This command simply creates an alias for a static command. While easy to implement, it really only allowed you to execute commands with no input.
+</p>
+<p>After that came the <code>command regex</code>, which let you specify a regular expression to capture input then apply it to a command. You learned about this command in Chapter 9, “Regex Commands”. This command works well when you want to feed input to an LLDB command, but it was inconvenient to execute multiline commands and supplying multiple, optional parameters could get really messy.
+</p>
+<p>Next up in the tradeoff between convenience and complexity is LLDB’s <em>script bridging</em>. With script bridging, you can do nearly anything you like. Script bridging is a <em>Python</em> interface LLDB uses to help extend the debugger to accomplish your wildest debugging dreams.
+</p>
+<p>However, there’s a cost to the script bridging interface. It has a steep learning curve, and the documentation, to put it professionally, sucks. Fortunately, you’ve got this book in your hands to help guide you through learning script bridging. Once you’ve a grasp on LLDB’s Python module, you can do some very cool (and very scary!) things.
+</p>
+<h2 class="segment-chapter">Credit where credit&apos;s due</h2>
+
+<p>Before we officially begin talking about script bridging, I want to bring up one Python script that has blown my mind. If it wasn&apos;t for this script, this book would not be in your hands.
+</p><pre class="code-block">/Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Versions/A/Resources/Python/lldb/macosx/heap.py</pre>
+<p>This is <i>the</i> script that made me take a deep dive into learning LLDB. I&apos;ve never had a mental butt-kicking as good as I did trying to initially understand what was happening in this code.
+</p>
+<p>This script had it all: finding stack traces for <code>malloc</code>&apos;d objects (<code>malloc_info -s</code>), getting all instances of a particular subclass of <code>NSObject</code> (<code>obj_refs -O</code>), finding all pointers to a particular reference in memory (<code>ptr_refs</code>), finding C strings in memory (<code>cstr_ref</code>).
+</p>
+<p>You can load the contents of this script with the following LLDB command:
+</p><pre class="code-block">(lldb) command script import lldb.macosx.heap</pre>
+<p>Sadly, this script has fallen a bit out of functionality as the compiler has changed, while this code has not, rendering several of its components unusable.
+</p>
+<p>When you&apos;re done reading this section, I would strongly encourage you to attempt to understand the contents of this script. You can learn <i>a lot</i> from it.
+</p>
+<p>Ok, now back to our regularly scheduled, reading program...
+</p>
+<h2 class="segment-chapter">Python 101</h2>
+
+<p>As mentioned, LLDB’s script bridge is a Python interface to the debugger. This means you can load and execute Python scripts in LLDB. In those Python scripts, you include the <code>lldb</code> module to interface with the debugger to obtain information such as the arguments to a custom command.
+</p>
+<p>Don’t know Python? Don’t fret. Python is one of the most friendly languages to learn. And just like the Swift Playgrounds everyone’s losing their mind over, Python has an attractive REPL for learning.
+</p>
+<div class="note">
+<p><em>Note</em>: At the time of writing, there are signs LLDB is slowly migrating over from Python version 2 to Python 3. Just like Swift, there are breaking changes in these different versions. In order to make sure you’re learning the correct version of Python, you need to know which version of Python LLDB is using. At the time of writing, LLDB uses Python 2.7.10.
+</p></div>
+
+<p>Let’s figure out which version of Python LLDB is using. Open a Terminal window and type the following:
+</p><pre class="code-block">lldb</pre>
+<p>As expected, LLDB will start. From there, execute the following commands to find out which Python version is linked to LLDB:
+</p><pre class="code-block">(lldb) script import sys
+(lldb) script print (sys.version)</pre>
+<p>The <code><em>script</em></code> command brings up the Python interpreter for LLDB. If you just typed in <code>script</code> without arguments, you’d be greeted with LLDB’s Python REPL.
+</p>
+<p>If LLDB’s Python version is different than 2.7.x, freak out and complain loudly on the book’s forum.
+</p>
+<div class="note">
+<p><em>Note</em>: If the version is 2.7.x this is still valid. As long as the version you’re running is not Python 3.X.Y by default your system will work as described. Your system-installed Python version does not have to match 2.7.10 exactly; bug fix releases work fine also.
+</p></div>
+
+<p>Now you know the Python version LLDB works with, ensure you have the correct version of Python symlinked to the <code>python</code> Terminal command. Open a new Terminal window and type the following:
+</p><pre class="code-block">python --version </pre>
+<p>If the Python version matches the one that LLDB has, then launch Python with no arguments in the Terminal:
+</p><pre class="code-block">python</pre>
+<p>If you have a different version of Python symlinked (i.e. 3.X.Y), you need to launch Python with the correct version number. For example, in Terminal, type <code>python</code> and press Tab. Different version(s) of Python might pop up with the correct version number. Enter the correct version number associated with the LLDB version of Python:
+</p><pre class="code-block">python2.7</pre>
+<p>Either way, ensure the LLDB version of Python matches the one you have in your Terminal:
+</p><pre class="code-block">&gt;&gt;&gt; import sys
+&gt;&gt;&gt; <span class="hljs-built_in">print</span> (sys.version)</pre>
+<p>Notice in the actual Python REPL there’s no need to prefix any of the commands with the LLDB script command.
+</p>
+<h3 class="segment-chapter">Playing around in Python</h3>
+
+<p>If you are unfamiliar with Python, this section will help you quickly get familiar with the language. If you’re already knowledgeable about Python, feel free to jump to the next section.
+</p>
+<p>In your Terminal session, open a Python REPL by typing the following:
+</p><pre class="code-block">python</pre>
+<p>Next, in the Python REPL, type the following:
+</p><pre class="code-block">&gt;&gt;&gt; h = <span class="hljs-string">"hello world"</span>
+&gt;&gt;&gt; h</pre>
+<p>You’ll see the following output:
+</p><pre class="code-block">&apos;hello world&apos;</pre>
+<p>Python lets you assign variables without needing to declare the type beforehand. Unlike Swift, Python doesn’t really have the notion of constants, so there’s no need for a <code>var</code> or <code>let</code> declaration for a variable.
+</p>
+<div class="note">
+<p><em>Note</em>: If you have a different version of Python, then some of the commands might have different syntax. You’ll need to consult Google to figure out the correct equivalent command.
+</p></div>
+
+<p>Going a step further, play around with the variable <code>h</code> and do some basic string manipulation:
+</p><pre class="code-block">&gt;&gt;&gt; h.split(<span class="hljs-string">" "</span>)
+[<span class="hljs-string">'hello'</span>, <span class="hljs-string">'world'</span>]</pre>
+<p>This will give a Python <em>list</em>, which is somewhat like an array that can store different types of objects.
+</p>
+<p>If you need your Swift fix equivalent, then imagine a list is something similar to the following Swift code:
+</p><pre class="code-block"><span class="hljs-keyword">var</span> h: [<span class="hljs-type">Any</span>] = []</pre>
+<p>You can verify this by looking up the Python’s class type. In Terminal, press the up arrow to bring up the previous command and append the <code>.__class__</code> call to the end like so:
+</p><pre class="code-block">&gt;&gt;&gt; h.split(<span class="hljs-string">" "</span>).__class__ 
+&lt;<span class="hljs-built_in">type</span> <span class="hljs-string">'list'</span>&gt;</pre>
+<p>Note there&apos;s two underscores preceding and following the word <i>class</i>.
+</p>
+<p>What type of class is the <code>h</code> variable?
+</p><pre class="code-block">&gt;&gt;&gt; h.__class__
+&lt;<span class="hljs-built_in">type</span> <span class="hljs-string">'str'</span>&gt;</pre>
+<p>That’s good to know; a string is called <code>str</code>. You can get help on the <code>str</code> object by typing the following:
+</p><pre class="code-block">&gt;&gt;&gt; <span class="hljs-built_in">help</span> (str)</pre>
+<p>This will dump all the info pertaining to <code>str</code>, which is too much to digest at the moment.
+</p>
+<p>Exit out of this documentation by typing the <code>q</code> character and narrow your search by looking only for the <code>split</code> function used previously:
+</p><pre class="code-block">&gt;&gt;&gt; <span class="hljs-built_in">help</span> (str.split)</pre>
+<p>You’ll get some documentation output similar to the following:
+</p><pre class="code-block">Help on method_descriptor:
+
+split(...)
+    S.split([sep [,maxsplit]]) -&gt; list of strings
+    
+    Return a list of the words in the string S, using sep as the
+    delimiter string.  If maxsplit is given, at most maxsplit
+    splits are done. If sep is not specified or is None, any
+    whitespace string is a separator and empty strings are
+    removed from the result.</pre>
+<p>Reading the above documentation, you can see the first optional argument expects a string, and an optional second argument to indicate the maximum upper limit to split the string.
+</p>
+<p>What do you think will happen when you try to execute the following command? Try your best to figure it out before executing it.
+</p><pre class="code-block">&gt;&gt;&gt; h.split(<span class="hljs-string">" "</span>, 0)</pre>
+<p>Now to turn your attention towards functions. Python uses indentation to define scope, instead of the braces that many other languages use, including Swift and Objective-C. This is a nice feature of Python, since it forces developers to not be lazy slobs with their code indentation.
+</p>
+<p>Declare a function in the REPL:
+</p><pre class="code-block">&gt;&gt;&gt; def <span class="hljs-built_in">test</span>(a):
+...</pre>
+<p>You’ll get an ellipsis as output, which indicates you have started creating a function. Type two spaces and then enter the following code. If you don’t have a consistent indentation, the python function will produce an error.
+</p><pre class="code-block">...   <span class="hljs-built_in">print</span>(a + <span class="hljs-string">" world!"</span>)</pre>
+<p>Press Enter again to exit out of the function. Now, test out your newly created <code>test</code> function:
+</p><pre class="code-block">&gt;&gt;&gt; <span class="hljs-built_in">test</span>(<span class="hljs-string">"hello"</span>)</pre>
+<p>You’ll get the expected <code>hello world!</code> printed out.
+</p>
+<p>Now that you can “truthfully” put three years of Python experience on your resume, it’s time to create an LLDB Python script.
+</p>
+<h2 class="segment-chapter">Creating your first LLDB Python script</h2>
+
+<p>From here on out, you’ll be creating all your LLDB Python scripts in the <code>~/lldb</code> directory. If you want to have them in a different directory, everytime I say <code>~/lldb</code>, you&apos;ll need to invoke your “mental symlink” to whatever directory you’ve decided to use.
+</p>
+<p>In Terminal, create the ~/lldb directory:
+</p><pre class="code-block">mkdir ~/lldb</pre>
+<p>In your favorite ASCII text editor, create a new file named <em>helloworld.py</em> in your newly created <code>~/lldb</code> directory. For this particular example, I’ll use the my-editor-is-better-neutral-argument, <code>nano</code>.
+</p><pre class="code-block">nano ~/lldb/helloworld.py</pre>
+<p>Add the following code to the file:
+</p><pre class="code-block">def your_first_command(debugger, command, result, internal_dict):
+  <span class="hljs-built_in">print</span> (<span class="hljs-string">"hello world!"</span>)</pre>
+<p>Make sure you indent the <code>print (&quot;hello world&quot;)</code> line (ideally with two spaces) or else it won’t be included as part of the function!
+</p>
+<p>For now, ignore the parameters passed into the function. Remember when you learned about your <code>hello_world.c</code> or <code>hello_world.java</code>, and the instructor (or the internet) said to just ignore the params in main for now? Yeah, same thing here. These params are the defined way LLDB interacts with your Python code. You’ll explore them in upcoming chapters.
+</p>
+<p>Save the file. If you’re using <code>nano</code>, <code>Ctrl + O</code> will write to disk.
+</p>
+<p>Create a new tab in Terminal and launch a new LLDB session:
+</p><pre class="code-block">lldb</pre>
+<p>This will launch a blank, unattached LLDB session.
+</p>
+<p>In this new LLDB session, import the script you created:
+</p><pre class="code-block">(lldb) command script import ~/lldb/helloworld.py</pre>
+<p>If the script is imported successfully, there will be no output.
+</p>
+<p>But how do you execute the command? The only thing the above command did was bring the <code>helloworld</code> (yes, named after the file) module’s path in as a candidate to use for Python.
+</p>
+<p>If you plan to use this function in Python, you’ll need to import the module if you want to use any of the functions. Type the following into LLDB:
+</p><pre class="code-block">(lldb) script import helloworld</pre>
+<p>You can verify you&apos;ve successfully imported the module by dumping all the methods in the <code>helloworld</code> python module:
+</p><pre class="code-block">(lldb) script dir(helloworld)</pre>
+<p>The <code>dir</code> function will dump the contents of the module. If you successfully imported the module, you’ll see the following output:
+</p><pre class="code-block">[&apos;__builtins__&apos;, &apos;__doc__&apos;, &apos;__file__&apos;, &apos;__name__&apos;, &apos;__package__&apos;, &apos;your_first_command&apos;]</pre>
+<p>Take note, the function you created earlier: <code>your_first_command</code> is listed in the output.
+</p>
+<p>Although the above two commands weren’t necessary to set up the command, it does show you how this script bridging works. You imported the <code>helloworld</code> module into the Python context of LLDB, but when you execute normal commands, you aren’t executing in a Python context (although the command logic underneath could be using Python).
+</p>
+<p>So how do you make your command available only through LLDB, and not through the Python context of LLDB?
+</p>
+<p>Head back to LLDB and type the following:
+</p><pre class="code-block">(lldb) command script add -f helloworld.your_first_command yay</pre>
+<p>This adds a command to LLDB, which is implemented in the <code>helloworld</code> Python module with the function <code>your_first_command</code>. This scripted function is assigned to the LLDB command <code><em>yay</em></code>.
+</p>
+<p>Execute the <code>yay</code> command now:
+</p><pre class="code-block">(lldb) yay</pre>
+<p>Provided everything worked, you’ll get the expected <code>hello world!</code> output.
+</p>
+<h2 class="segment-chapter">Setting up commands efficiently</h2>
+
+<p>Once the high of creating a custom function in script bridging has worn off, you’ll come to realize you don’t want to type this stuff each time you start LLDB. You want those commands to be there ready for you as soon as LLDB starts.
+</p>
+<p>Fortunately, LLDB has a lovely function named <code><em>__lldb_init_module</em></code>, which is a hook function called as soon as your module loads into LLDB.
+</p>
+<p>This means you can stick your logic for creating the LLDB command in this function, eliminating the need to manually set up your LLDB function once LLDB starts!
+</p>
+<p>Open the <code>helloworld.py</code> class you created and add the following function below <code>your_first_command</code>’s definition:
+</p><pre class="code-block">def __lldb_init_module(debugger, internal_dict):
+    debugger.<span class="hljs-type">HandleCommand</span>('command script add -f helloworld.your_first_command yay')</pre>
+<p>Here you&apos;re using a parameter passed into the function named <code>debugger</code>. With this object, an instance of <code>SBDebugger</code>, you’re using a method available to it called <code>HandleCommand</code>. Calling <code>debugger.HandleCommand</code> is pretty much equivalent to typing something into LLDB.
+</p>
+<p>For example, if you typed: <code>po &quot;hello world&quot;</code>, the equivalent command would be <code>debugger.HandleCommand(&apos;po &quot;hello world&quot;&apos;)</code>
+</p>
+<p>Remember the python <code>help</code> command you used earlier? You can get help documentation from this command by typing:
+</p><pre class="code-block">(lldb) script help(lldb.SBDebugger.HandleCommand)</pre>
+<p>At the time of writing, you’ll get a rather disappointing amount of help documentation:
+</p><pre class="code-block">HandleCommand(self, *args) unbound lldb.SBDebugger method
+    HandleCommand(self, str command)</pre>
+<p>That’s why there’s such a steep learning curve to this stuff, and the reason not many people venture into learning about script bridging. That’s why you picked up this book, right?
+</p>
+<p>Save your <em>helloworld.py</em> file and open up your <code>~/.lldbinit</code> file in your favorite editor.
+</p>
+<p>You’re now going to specify you want the <code>helloworld</code> module to load at startup every time LLDB loads up.
+</p>
+<p>At the end of the file, add the following line:
+</p><pre class="code-block"><span class="hljs-built_in">command</span> script import ~/lldb/helloworld.py</pre>
+<p>Save and close the file.
+</p>
+<p>Open Terminal and start up another tab with LLDB in it like so:
+</p><pre class="code-block">lldb</pre>
+<p>Since you specified to have the <code>helloworld</code> module imported into LLDB upon startup, and you also specified to create the <code>yay</code> function as soon as the <code>helloworld</code> python module loads through the <code>__lldb_init_module</code> module, the <code>yay</code> LLDB command will be available immediately to you.
+</p>
+<p>Try it out now:
+</p><pre class="code-block">(lldb) yay</pre>
+<p>If everything went well you’ll see the following output:
+</p><pre class="code-block">hello world!</pre>
+<p>Awesome! You now have a foundation for building some very complex scripts into LLDB. In the following chapters, you’ll explore more of how to use this incredibly powerful tool.
+</p>
+<p>For now, close all those Terminal tabs and give yourself a pat on the back.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>If you don’t feel comfortable with Python, now is the time to start brushing up on it. If you have past development experience, you’ll find Python to be a fun and friendly language to learn. It’s a great language for quickly building other tools to help with everyday programming tasks.
+</p></body></html>

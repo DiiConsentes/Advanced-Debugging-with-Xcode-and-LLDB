@@ -1,0 +1,382 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 5: Expression</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 5: Expression</h1>
+
+<p>Now that you’ve learned how to set breakpoints so the debugger will stop in your code, it’s time to get useful information out of whatever software you’re debugging.
+</p>
+<p>You’ll often want to inspect instance variables of objects. But, did you know you can even execute arbitrary code through LLDB? What’s more, by using the Objective-C runtime you can declare, initialize, and inject code all on the fly to help aid in your understanding of the program.
+</p>
+<p>In this chapter you’ll learn about the <code><em>expression</em></code> command. This allows you to execute arbitrary code in the debugger.
+</p>
+<h2 class="segment-chapter">Formatting p &amp; po</h2>
+
+<p>You might be familiar with the go-to debugging command, <code><em>po</em></code>. <code>po</code> is often used in Swift &amp; Objective-C code to print out an item of interest. This could be an instance variable in an object, a local reference to an object, or a register, as you’ve seen earlier in this book. It could even be an arbitrary memory reference — so long as there’s an object at that address!
+</p>
+<p>If you do a quick <code>help po</code> in the LLDB console, you’ll find <code>po</code> is actually a shorthand expression for <code>expression -O --</code>. The <code>-O</code> arugment is used to print the object’s description.
+</p>
+<p><code>po</code>’s often overlooked sibling, <code><em>p</em></code>, is another abbreviation with the <code>-O</code> option omitted, resulting in <code>expression --</code>. The format of what <code>p</code> will print out is more dependent on the <em>LLDB type system</em>. LLDB’s type formatting of values helps determine its output and is fully customizable (as you’ll see in a second).
+</p>
+<p>It’s time to learn how the <code>p</code> &amp; <code>po</code> commands get their content. You’ll continue using the Signals project for this chapter.
+</p>
+<p>Start by opening the Signals project in Xcode. Next, open <em>MasterViewController.swift</em> and add the following code at the top of the class:
+</p><pre class="code-block"><span class="hljs-keyword">override</span> <span class="hljs-keyword">var</span> description: <span class="hljs-type">String</span> {
+  <span class="hljs-keyword">return</span> <span class="hljs-string">"Yay! debugging "</span> + <span class="hljs-keyword">super</span>.description
+}</pre>
+<p>In <code>viewDidLoad</code>, add the following line of code below <code>super.viewDidLoad()</code>:
+</p><pre class="code-block"><span class="hljs-built_in">print</span>(<span class="hljs-string">"<span class="hljs-subst">\(<span class="hljs-keyword">self</span>)</span>"</span>)</pre>
+<p>Now, put a breakpoint just after the print method you created in the <code>viewDidLoad()</code> of <em>MasterViewController.swift</em>. Do this using the Xcode GUI breakpoint side panel.
+</p>
+<p>Build and run the application.
+</p><div class="image-100"><img src="graphics/img16.png"  alt="" title="" /></div>
+<p>Once the Signals project stops at <code>viewDidLoad()</code>, type the following into the LLDB console:
+</p><pre class="code-block">(lldb) po self </pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block">Yay! debugging &lt;Signals.MasterViewController: 0x7f8a0ac06b70&gt;</pre>
+<p>Take note of the output of the <code>print</code> statement and how it matches the <code>po self</code> you just executed in the debugger.
+</p>
+<p>You can also take it a step further. <code>NSObject</code> has an additional method description used for debugging called <code><em>debugDescription</em></code>. Add the following below your <code>description</code> variable definition:
+</p><pre class="code-block"><span class="hljs-keyword">override</span> <span class="hljs-keyword">var</span> debugDescription: <span class="hljs-type">String</span> {
+  <span class="hljs-keyword">return</span> <span class="hljs-string">"debugDescription: "</span> + <span class="hljs-keyword">super</span>.debugDescription
+}</pre>
+<p>Build and run the application. When the debugger stops at the breakpoint, print <code>self</code> again:
+</p><pre class="code-block">(lldb) po self</pre>
+<p>The output from the LLDB console will look similar to the following:
+</p><pre class="code-block">debugDescription: Yay! debugging &lt;Signals.MasterViewController: 0x7fb71fd04080&gt;</pre>
+<p>Notice how the <code>po self</code> and the output of <code>self</code> from the <code>print</code> command now differ, since you implemented <code>debugDescription</code>. When you print an object from LLDB, it’s <code>debugDescription</code> that gets called, rather than <code>description</code>. Neat!
+</p>
+<p>As you can see, having a <code>description</code> or <code>debugDescription</code> when working with an <code>NSObject</code> class or subclass will influence the output of <code>po</code>.
+</p>
+<p>So which objects override these description methods? You can easily hunt down which objects override these methods using the <code>image lookup</code> command with a smart regex query. Your learnings from previous chapters are already coming in handy!
+</p>
+<p>For example, if you wanted to know all the Objective-C classes that override <code>debugDescription</code>, you can simply query all the methods by typing:
+</p><pre class="code-block">(lldb) image lookup -rn &apos;\ debugDescription\]&apos;</pre>
+<p>Based upon the output, it seems the authors of the Foundation framework have added the <code>debugDescription</code> to a lot of foundation types (i.e. <code>NSArray</code>), to make our debugging lives easier. In addition, they’re also private classes that have overridden <code>debugDescription</code> methods as well.
+</p>
+<p>You may notice one of them in the listing is <code>CALayer</code>. Let’s take a look at the difference between <code>description</code> and <code>debugDescription</code> in <code>CALayer</code>.
+</p>
+<p>In your LLDB console, type the following:
+</p><pre class="code-block">(lldb) po self.view!.layer.description</pre>
+<p>You’ll see something similar to the following:
+</p><pre class="code-block">&quot;&lt;CALayer: 0x61000022e980&gt;&quot;</pre>
+<p>That’s a little boring. Now type the following:
+</p><pre class="code-block">(lldb) po self.view!.layer</pre>
+<p>You’ll see something similar to the following:
+</p><pre class="code-block">&lt;CALayer:0x61000022e980; position = CGPoint (187.5 333.5); bounds = CGRect (0 0; 375 667); delegate = &lt;UITableView: 0x7fdd04857c00; frame = (0 0; 375 667); clipsToBounds = YES; autoresize = W+H; gestureRecognizers = &lt;NSArray: 0x610000048220&gt;; layer = &lt;CALayer: 0x61000022e980&gt;; contentOffset: {0, 0}; contentSize: {375, 0}&gt;; sublayers = (&lt;CALayer: 0x61000022d480&gt;, &lt;CALayer: 0x61000022da60&gt;, &lt;CALayer: 0x61000022d8c0&gt;); masksToBounds = YES; allowsGroupOpacity = YES; backgroundColor = &lt;CGColor 0x6100000a64e0&gt; [&lt;CGColorSpace 0x61800002c580&gt; (kCGColorSpaceICCBased; kCGColorSpaceModelRGB; sRGB IEC61966-2.1; extended range)] ( 1 1 1 1 )&gt;</pre>
+<p>That’s much more interesting — and much more useful! Obviously the developers of Core Animation decided the plain <code>description</code> should be just the object reference, but if you’re in the debugger, you’ll want to see more information. It’s unclear exactly why they did this. It might be some of the information in the debug description is expensive to calculate, so they only want to do it when absolutely necessary.
+</p>
+<p>Next, while you’re still stopped in the debugger (and if not, get back to the <code>viewDidLoad()</code> breakpoint), try executing the <code>p</code> command on <code>self</code>, like so:
+</p><pre class="code-block">(lldb) p self</pre>
+<p>You’ll get something similar to the following:
+</p><pre class="code-block">(Signals.MasterViewController) $R2 = 0x00007fb71fd04080 {
+  UIKit.UITableViewController = {
+    baseUIViewController@0 = &lt;extracting data from value failed&gt;
+
+    _tableViewStyle = 0
+    _keyboardSupport = nil
+    _staticDataSource = nil
+    _filteredDataSource = 0x000061800024bd90
+    _filteredDataType = 0
+  }
+  detailViewController = nil
+}</pre>
+<p>This might look scary, but let’s break it down.
+</p>
+<p>First, LLDB spits out the class name of <code>self</code>. In this case, <code>Signals.MasterViewController</code>.
+</p>
+<p>Next follows a reference you can use to refer to this object from now on within your LLDB session. In the example above, it’s <code>$R2</code>. Yours will vary as this is a number LLDB increments as you use LLDB.
+</p>
+<p>This reference is useful if you ever want to get back to this object later in the session, perhaps when you’re in a different scope and <code>self</code> is no longer the same object. In that case, you can refer back to this object as <code>$R2</code>. To see how, type the following:
+</p><pre class="code-block">(lldb) p $R2</pre>
+<p>You’ll see the same information printed out again. You’ll learn more about these LLDB variables later in this chapter.
+</p>
+<p>After the LLDB variable name is the address to this object, followed by some output specific to this type of class. In this case, it shows the details relevant to UITableViewController, which is the superclass of MasterViewController, followed by the <code>detailViewController</code> instance variable.
+</p>
+<p>As you can see, the meat of the output of the <code>p</code> command is different to the <code>po</code> command. The output of <code>p</code> is dependent upon <em>type formatting</em>: internal data structures the LLDB authors have added to every (noteworthy) data structure in Objective-C, Swift, and other languages. It’s important to note the formatting for Swift is under active development with every Xcode release, so the output of <code>p</code> for <code>MasterViewController</code> might be different for you.
+</p>
+<p>Since these type formatters are held by LLDB, you have the power to change them if you so desire. In your LLDB session, type the following:
+</p><pre class="code-block">(lldb) type summary add Signals.MasterViewController --summary-string &quot;Wahoo!&quot;</pre>
+<p>You’ve now told LLDB you just want to return the static string, <code>&quot;Wahoo!&quot;</code>, whenever you print out an instance of the MasterViewController class. The <code>Signals</code> prefix is essential for Swift classes since Swift includes the module in the classname to prevent namespace collisions. Try printing out <code>self</code> now, like so:
+</p><pre class="code-block">(lldb) p self </pre>
+<p>The output should look similar to the following:
+</p><pre class="code-block">(lldb) (Signals.MasterViewController) $R3 = 0x00007fb71fd04080 Wahoo!</pre>
+<p>This formatting will be remembered by LLDB across app launches, so be sure to remove it when you’re done playing with the <code>p</code> command. Remove yours from your LLDB session like so:
+</p><pre class="code-block">(lldb) type summary clear</pre>
+<p>Typing <code>p self</code> will now go back to the default implementation created by the LLDB formatting authors. Type formatting is a detailed topic, which is worth further exploration in a future chapter since it can greatly help debug applications you don’t have source code for.
+</p>
+<h2 class="segment-chapter">Swift vs Objective-C debugging contexts</h2>
+
+<p>It’s important to note there are two debugging contexts when debugging your program: a non-Swift debugging context and a Swift context. By default, when you stop in Objective-C code, LLDB will use the non-Swift (Objective-C) debugging context, while if you’re stopped in Swift code, LLDB will use the Swift context. Sounds logical, right?
+</p>
+<p>If you stop the debugger out of the blue, LLDB will choose the Objective-C context by default.
+</p>
+<p>Make sure the GUI breakpoint you’ve created in the previous section is still enabled and build and run the app. When the breakpoint hits, type the following into your LLDB session:
+</p><pre class="code-block">(lldb) po [UIApplication sharedApplication]</pre>
+<p>LLDB will throw a cranky error at you:
+</p><pre class="code-block">error: &lt;EXPR&gt;:3:16: error: expected &apos;,&apos; separator
+[UIApplication sharedApplication]
+               ^
+              ,</pre>
+<p>You’ve stopped in Swift code, so you’re in the Swift context. But you’re trying to execute Objective-C code. That won’t work. Similarly, in the Objective-C context, doing a <code>po</code> on a Swift object will not work.
+</p>
+<p>You can force the expression to be used in the Objective-C context with the <code>-l</code> option to select the language. However, since the <code>po</code> expression is mapped to <code>expression -O --</code>, you’ll be unable to use the <code>po</code> command since the arguments you provide come <i>after</i> the <code>--</code>, which means you’ll have to type out the <code>expression</code>. In LLDB, type the following:
+</p><pre class="code-block">(lldb) expression -l objc -O -- [UIApplication sharedApplication] </pre>
+<p>Here you’ve told LLDB to use the <code>objc</code> language for Objective-C. You can also use <code>objc++</code> for Objective-C++ if necessary.
+</p>
+<p>LLDB will spit out the reference to the shared application. Try the same thing in Swift. Since you’re already stopped in the Swift context, try to print the UIApplication reference using Swift syntax, like so:
+</p><pre class="code-block">(lldb) po UIApplication.shared</pre>
+<p>You’ll get the same output as you did printing with the Objective-C context. Resume the program, by typing <code>continue</code>, then pause the Signals application out of the blue.
+</p>
+<p>From there,  press the up arrow to bring up the same Swift command you just executed and see what happens:
+</p><pre class="code-block">(lldb) po UIApplication.shared</pre>
+<p>Again, LLDB will be cranky:
+</p><pre class="code-block">error: property &apos;shared&apos; not found on object of type &apos;UIApplication&apos;</pre>
+<p>Remember, stopping out of the blue will put LLDB in the Objective-C context. That’s why you’re getting this error when trying to execute Swift code.
+</p>
+<p>You should always be aware of the language in which you are currently paused in the debugger.
+</p>
+<h2 class="segment-chapter">User defined variables</h2>
+
+<p>As you saw earlier, LLDB will automatically create local variables on your behalf when printing out objects. You can create your own variables as well.
+</p>
+<p>Remove all the breakpoints from the program and build and run the app. Stop the debugger out of the blue so it defaults to the Objective-C context. From there type:
+</p><pre class="code-block">(lldb) po id test = [NSObject new]</pre>
+<p>LLDB will execute this code, which creates a new NSObject and stores it to the <code>test</code> variable. Now try to print it like so:
+</p><pre class="code-block">(lldb) po test </pre>
+<p>You’ll get an error like the following:
+</p><pre class="code-block">error: use of undeclared identifier &apos;test&apos;</pre>
+<p>This is because you need to prepend variables you want LLDB to remember with the <code><em>$</em></code> character.
+</p>
+<p>Try declaring <code>test</code> again with the <code>$</code> in front:
+</p><pre class="code-block">(lldb) po id $test = [NSObject new] 
+(lldb) po $test 
+&lt;NSObject: 0x60000001d190&gt;</pre>
+<p>This variable was created in the Objective-C object. But what happens if you try to access this from the Swift context? Try it, by typing the following:
+</p><pre class="code-block">(lldb) expression -l swift -O -- $test </pre>
+<p>So far so good. Now try executing a Swift-styled method on this Objective-C class.
+</p><pre class="code-block">(lldb) exppression -l swift -O -- $test.description</pre>
+<p>You’ll get an error like this:
+</p><pre class="code-block">error: &lt;EXPR&gt;:3:1: error: use of unresolved identifier &apos;$test&apos;
+$test.description
+^~~~~</pre>
+<p>If you create an LLDB variable in the Objective-C context, then move to the Swift context, don’t expect everything to “just work.” This is an area under active development and the bridging between Objective-C and Swift through LLDB will likely see improvements over time.
+</p>
+<p>So how could creating references in LLDB actually be used in a real life situation? You can grab the reference to an object and execute (as well as debug!) arbitrary methods of your choosing. To see this in action, create a symbolic breakpoint on MasterViewController’s parent view controller, <em>MasterContainerViewController</em> using an Xcode symbolic breakpoint for MasterContainerViewController’s <code>viewDidLoad</code>.
+</p>
+<p>In the Symbol section, type the following:
+</p><pre class="code-block">Signals.MasterContainerViewController.viewDidLoad() -&gt; ()</pre>
+<p>Be aware of the spaces for the parameters and parameter return type, otherwise the breakpoint will not work.
+</p>
+<p>Your breakpoint should look like the following:
+</p><div class="image-70"><img src="graphics/img17.png"  alt="" title="" /></div>
+<p>Build and run the app. Xcode will now break on <code>MasterContainerViewController.viewDidLoad()</code>. From there, type the following:
+</p><pre class="code-block">(lldb) p self </pre>
+<p>Since this is the first argument you executed in the Swift debugging context, LLDB will create the variable, <code><em>$R0</em></code>. Resume execution of the program by typing <code>continue</code> in LLDB.
+</p>
+<p>Now you don’t have a reference to the instance of <code>MasterContainerViewController</code> through the use of <code>self</code> since the execution has left <code>viewDidLoad()</code> and moved on to bigger and better run loop events.
+</p>
+<p>Oh, wait, you still have that <code>$R0</code> variable! You can now reference <code>MasterContainerViewController</code> and even execute arbitrary methods to help debug your code.
+</p>
+<p>Pause the app in the debugger manually, then type the following:
+</p><pre class="code-block">(lldb) po $R0.title</pre>
+<p>Unfortunately, you get:
+</p><pre class="code-block">error: use of undeclared identifier &apos;$R0&apos;</pre>
+<p>You stopped the debugger out of the blue! Remember, LLDB will default to Objective-C; you’ll need to use the <code>-l</code> option to stay in the Swift context:
+</p><pre class="code-block">(lldb) expression -l swift -- $R0.title</pre>
+<p>This will output the following:
+</p><pre class="code-block">(String?) $R1 = &quot;Quarterback&quot;</pre>
+<p>Of course, this is the title of the view controller, shown in the navigation bar.
+</p>
+<p>Now, type the following:
+</p><pre class="code-block">(lldb) expression -l swift -- $R0.title = &quot;💩💩💩💩💩&quot;</pre>
+<p>Resume the app by typing <code>continue</code> or pressing the play button in Xcode.
+</p>
+<div class="note">
+<p><em>Note</em>: To quickly access a poop emoji on your macOS machine, hold down <code>⌘ + ⌃ + space</code>. From there, you can easily hunt down the correct emoji by searching for the phrase “poop”.
+</p></div>
+
+<p>It’s the small things in life you cherish!
+</p><div class="image-30"><img src="graphics/img18.png"  alt="" title="" /></div>
+<p>As you can see, you can easily manipulate variables to your will.
+</p>
+<p>In addition, you can also create a breakpoint on code, execute the code, and cause the breakpoint to be hit. This can be useful if you’re in the middle of debugging something and want to step through a function with certain inputs to see how it operates.
+</p>
+<p>For example, you still have the symbolic breakpoint in <code>viewDidLoad()</code>, so try executing that method to inspect the code. Pause execution of the program, then type:
+</p><pre class="code-block">(lldb) expression -l swift -O -- $R0.viewDidLoad()</pre>
+<p>Nothing happened. The breakpoint didn’t hit. What gives? In fact, <code>MasterContainerViewController</code> <i>did</i> execute the method, but by default, LLDB will ignore any breakpoints when executing commands. You can disable this option with the <code>-i</code> option.
+</p>
+<p>Type the following into your LLDB session:
+</p><pre class="code-block">(lldb) expression -l swift -O -i 0 -- $R0.viewDidLoad()</pre>
+<p>LLDB will now break on the <code>viewDidLoad()</code> symbolic breakpoint you created earlier. This tactic is a great way to test the logic of methods. For example, you can implement test-driven debugging, by giving a function different parameters to see how it handles different input.
+</p>
+<h3 class="segment-chapter">Type formatting</h3>
+
+<p>One of the nice options LLDB has is the ability to format the output of basic data types. This makes LLDB a great tool to learn how the compiler formats basic C types. This is a must to know when you’re exploring the assembly section, which you’ll do later in this book.
+</p>
+<p>Build and run the app, then pause the debugger out of the blue to make sure you’re in the Objective-C context.
+</p>
+<p>Type the following into your LLDB session:
+</p><pre class="code-block">(lldb) expression -G x -- 10</pre>
+<p>This <code>-G</code> option tells LLDB what format you want the output in. The G stands for <em>GDB format</em>. If you’re not aware, GDB is the debugger that preceded LLDB. This therefore is saying whatever you specify is a GDB format specifier. In this case, <code>x</code> is used which indicates hexadecimal.
+</p>
+<p>You’ll see the following output:
+</p><pre class="code-block">(int) $0 = 0x0000000a</pre>
+<p>This is decimal 10 printed as hexadecimal. Wow!
+</p>
+<p>But wait! There’s more! LLDB lets you format types using a neat shorthand syntax. Type the following:
+</p><pre class="code-block">(lldb) p/x 10</pre>
+<p>You’ll see the same output as before. But that’s a lot less typing!
+</p>
+<p>This is great for learning the representations behind C datatypes. For example, what’s the binary representation of the integer 10?
+</p><pre class="code-block">(lldb) p/t 10</pre>
+<p>The <code>/t</code> specifies binary format. You’ll see what decimal 10 looks like in binary. This can be particularly useful when you’re dealing with a bit field for example, to double check what fields will be set for a given number.
+</p>
+<p>What about negative 10?
+</p><pre class="code-block">(lldb) p/t -10</pre>
+<p>Decimal 10 in two’s complement. Neat!
+</p>
+<p>What about the floating point binary representation of 10.0?
+</p><pre class="code-block">(lldb) p/t 10.0</pre>
+<p>That could come in handy!
+</p>
+<p>How about the ASCII value of the character ’D’?
+</p><pre class="code-block">(lldb) p/d &apos;D&apos;</pre>
+<p>Ah so ’D’ is 68! The <code>/d</code> specifies decimal format.
+</p>
+<p>Finally, what is the acronym hidden behind this integer?
+</p><pre class="code-block">(lldb) p/c 1430672467</pre>
+<p>The <code>/c</code> specifies <code>char</code> format. It takes the number in binary, splits into 8 bit (1 byte) chunks, and converts each chunk into an ASCII character. In this case, it’s a 4 character code (FourCC), saying <code>STFU</code>. Hey! Be nice now!
+</p>
+<p>The full list of output formats is as follows (taken from <a href="https://sourceware.org/gdb/onlinedocs/gdb/Output-Formats.html">https://sourceware.org/gdb/onlinedocs/gdb/Output-Formats.html</a>):
+</p>
+<ul>
+<li>
+<p><code>x</code>: hexadecimal
+</p></li>
+
+<li>
+<p><code>d</code>: decimal
+</p></li>
+
+<li>
+<p><code>u</code>: unsigned decimal
+</p></li>
+
+<li>
+<p><code>o</code>: octal
+</p></li>
+
+<li>
+<p><code>t</code>: binary
+</p></li>
+
+<li>
+<p><code>a</code>: address
+</p></li>
+
+<li>
+<p><code>c</code>: character constant
+</p></li>
+
+<li>
+<p><code>f</code>: float
+</p></li>
+
+<li>
+<p><code>s</code>: string
+</p></li>
+</ul>
+
+<p>If these formats aren’t enough for you, you can use LLDB’s extra formatters, although you’ll be unable to use the GDB formatting syntax.
+</p>
+<p>LLDB’s formatters can be used like this:
+</p><pre class="code-block">(lldb) expression -f Y -- 1430672467</pre>
+<p>This gives you the following output:
+</p><pre class="code-block">(int) $0 = 53 54 46 55             STFU</pre>
+<p>This explains the FourCC code from earlier!
+</p>
+<p>LLDB has the following formatters (taken from <a href="http://lldb.llvm.org/varformats.html">http://lldb.llvm.org/varformats.html</a>):
+</p>
+<ul>
+<li>
+<p><code>B</code>: boolean
+</p></li>
+
+<li>
+<p><code>b</code>: binary
+</p></li>
+
+<li>
+<p><code>y</code>: bytes
+</p></li>
+
+<li>
+<p><code>Y</code>: bytes with ASCII
+</p></li>
+
+<li>
+<p><code>c</code>: character
+</p></li>
+
+<li>
+<p><code>C</code>: printable character
+</p></li>
+
+<li>
+<p><code>F</code>: complex float
+</p></li>
+
+<li>
+<p><code>s</code>: c-string
+</p></li>
+
+<li>
+<p><code>i</code>: decimal
+</p></li>
+
+<li>
+<p><code>E</code>: enumeration
+</p></li>
+
+<li>
+<p><code>x</code>: hex
+</p></li>
+
+<li>
+<p><code>f</code>: float
+</p></li>
+
+<li>
+<p><code>o</code>: octal
+</p></li>
+
+<li>
+<p><code>O</code>: OSType
+</p></li>
+
+<li>
+<p><code>U</code>: unicode16
+</p></li>
+
+<li>
+<p><code>u</code>: unsigned decimal
+</p></li>
+
+<li>
+<p><code>p</code>: pointer
+</p></li>
+</ul>
+
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>Pat yourself on the back — this was another jam-packed round of what you can do with the <code>expression</code> command. Try exploring some of the other expression options yourself by executing <code>help expression</code> and see if you can figure out what they do.
+</p></body></html>

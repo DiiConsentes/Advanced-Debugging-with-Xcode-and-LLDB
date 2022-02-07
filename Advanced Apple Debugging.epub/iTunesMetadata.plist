@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>BKAllocatedSize</key>
+	<integer>206237696</integer>
+	<key>BKDisplayName</key>
+	<string>Advanced.Apple.Debugging.&amp;.Reverse.Engineering.v2.0</string>
+	<key>BKGenerationCount</key>
+	<integer>2</integer>
+	<key>BKInsertionDate</key>
+	<integer>625720049</integer>
+	<key>book-info</key>
+	<dict>
+		<key>cover-image-hash</key>
+		<string>D3E191E5CC67EE6DBA072BEA4FB7B664</string>
+		<key>cover-image-path</key>
+		<string>OEBPS/html/graphics/cover-image.png</string>
+		<key>mime-type</key>
+		<string>application/epub+zip</string>
+		<key>package-file-hash</key>
+		<string>3ECE381EBB26C8ED880D512B0BDC236F</string>
+		<key>publisher-unique-id</key>
+		<string>http://raywenderlich.com/epubs/dbg</string>
+		<key>unique-id</key>
+		<integer>877795601429605959</integer>
+		<key>update-level</key>
+		<integer>2</integer>
+	</dict>
+	<key>isPreview</key>
+	<false/>
+	<key>itemName</key>
+	<string>Advanced Apple Debugging</string>
+</dict>
+</plist>

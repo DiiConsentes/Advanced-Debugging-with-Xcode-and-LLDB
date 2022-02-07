@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 2: Help &amp; Apropos</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 2: Help &amp; Apropos</h1>
+
+<p>Just like any respectable developer tool, LLDB ships with a healthy amount of documentation. Knowing how to navigate through this documentation — including some of the more obscure command flags — is essential to mastering LLDB.
+</p>
+<h2 class="segment-chapter">The &quot;help&quot; command</h2>
+
+<p>Open a <code>Terminal</code> window and type <code>lldb</code>. The LLDB prompt will appear. From there, simply type the <code>help</code> command:
+</p><pre class="code-block">(lldb) help </pre>
+<p>This will dump out all available commands, including the custom commands loaded from your <code>~/.lldbinit</code> — but more on that later.
+</p><div class="image-80"><img src="graphics/img10.png"  alt="" title="" /></div>
+<p>There&apos;s quite a few commands one can use with LLDB.
+</p>
+<p>However, many commands have numerous subcommands, which in turn can have subcommands, which also have their own associated documentation. I told you it was a healthy amount of documentation!
+</p>
+<p>Take the <code>breakpoint</code> command for instance. Run the documentation for <code>breakpoint</code> by typing the following:
+</p><pre class="code-block">(lldb) help breakpoint</pre>
+<p>You’ll see the following output:
+</p><pre class="code-block"> Commands for operating on breakpoints (see &apos;help b&apos; for shorthand.)
+
+Syntax: breakpoint
+
+The following subcommands are supported:
+
+  clear   -- Delete or disable breakpoints matching the specified
+             source file and line.
+  command -- Commands for adding, removing and listing LLDB commands
+             executed when a breakpoint is hit.
+  delete  -- Delete the specified breakpoint(s).  If no breakpoints are
+             specified, delete them all.
+  disable -- Disable the specified breakpoint(s) without deleting them.
+             If none are specified, disable all breakpoints.
+  enable  -- Enable the specified disabled breakpoint(s). If no
+             breakpoints are specified, enable all of them.
+  list    -- List some or all breakpoints at configurable levels of
+             detail.
+  modify  -- Modify the options on a breakpoint or set of breakpoints
+             in the executable.  If no breakpoint is specified, acts on
+             the last created breakpoint.  With the exception of -e, -d
+             and -i, passing an empty argument clears the modification.
+  name    -- Commands to manage name tags for breakpoints
+  read    -- Read and set the breakpoints previously saved to a file
+             with &quot;breakpoint write&quot;.
+  set     -- Sets a breakpoint or set of breakpoints in the executable.
+  write   -- Write the breakpoints listed to a file that can be read in
+             with &quot;breakpoint read&quot;.  If given no arguments, writes all
+             breakpoints.
+
+For more help on any particular subcommand, type &apos;help &lt;command&gt; &lt;subcommand&gt;&apos;.</pre>
+<p>From there, you can see several supported subcommands. Look up the documentation for <code>breakpoint name</code> by typing the following:
+</p><pre class="code-block">(lldb) help breakpoint name</pre>
+<p>You’ll see the following output:
+</p><pre class="code-block">   Commands to manage name tags for breakpoints
+
+Syntax: breakpoint name
+
+The following subcommands are supported:
+
+      add    -- Add a name to the breakpoints provided.
+      delete -- Delete a name from the breakpoints provided.
+      list   -- List either the names for a breakpoint or the breakpoints for a given name.
+
+For more help on any particular subcommand, type &apos;help &lt;command&gt; &lt;subcommand&gt;&apos;.</pre>
+<p>If you don’t understand <code>breakpoint name</code> at the moment, don’t worry — you’ll become familiar with breakpoints and all of the subsequent commands soon. For now, the <code>help</code> command is the most important command you can remember.
+</p>
+<h2 class="segment-chapter">The &quot;apropos&quot; command</h2>
+
+<p>Sometimes you don’t know the name of the command you’re searching for, but you know a certain word or phrase that might point you in the right direction. The <code>apropos</code> command can do this for you; it’s a bit like using a search engine to find something on the web.
+</p>
+<p><code>apropos</code> will do a case-insensitive search for any word or string against the LLDB documentation and return any matching results. For example, try searching for anything pertaining to Swift:
+</p><pre class="code-block">(lldb) apropos swift</pre>
+<p>You’ll see the following output:
+</p><pre class="code-block">The following commands may relate to &apos;swift&apos;:
+  swift    -- A set of commands for operating on the Swift Language Runtime.
+  demangle -- Demangle a Swift mangled name
+  refcount -- Inspect the reference count data for a Swift object
+
+The following settings variables may relate to &apos;swift&apos;:
+
+
+  target.swift-framework-search-paths -- List of directories to be searched when locating frameworks for Swift.
+  target.swift-module-search-paths -- List of directories to be searched when locating modules for Swift.
+  target.use-all-compiler-flags -- Try to use compiler flags for all modules when setting up the Swift expression parser, not just the main executable.</pre>
+<p>This dumped everything that might pertain to the word Swift: first the commands, and then the LLDB settings which can be used to control how LLDB operates.
+</p>
+<p>You can also use <code>apropos</code> to search for a particular sentence. For example, if you were searching for something that can help with reference counting, you might try the following:
+</p><pre class="code-block">(lldb) apropos &quot;reference count&quot;
+The following commands may relate to &apos;reference count&apos;:
+  refcount -- Inspect the reference count data for a Swift object</pre>
+<p>Notice the quotes surrounding the words <code>&quot;reference count&quot;</code>. <code>apropos</code> will only accept one argument to search for, so the quotes are necessary to treat the input as a single argument.
+</p>
+<p>Isn’t that neat? <code>apropos</code> is a handy tool for querying. It’s not quite as sophisticated as modern internet search engines; however, with some playing around, you can usually find what you’re looking for.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>It’s easy to forget the onslaught of LLDB commands that will soon come, but try to commit these two commands, <code>help</code> and <code>apropos</code>, to heart. They’re the foundation for querying information on commands and you’ll be using them all the time as you master debugging.
+</p></body></html>

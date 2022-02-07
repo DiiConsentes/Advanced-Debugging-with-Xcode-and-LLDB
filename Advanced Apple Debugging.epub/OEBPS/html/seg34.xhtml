@@ -1,0 +1,684 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 24: SB Examples, Malloc Logging</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 24: SB Examples, Malloc Logging</h1>
+
+<p>For the final chapter in this section, you’ll go through the same steps I myself took to understand how the <em>MallocStackLogging</em> environment variable is used to get the stack trace when an object is created.
+</p>
+<p>From there, you’ll create a custom LLDB command which gives you the stack trace of when an object was allocated or deallocated in memory — even after the stack trace is long gone from the debugger.
+</p>
+<p>Knowing the stack trace of where an object was created in your program is not only useful for reverse engineering, but also has great use cases in your typical day-to-day debugging. When a process crashes, it’s incredibly helpful to know the history of that memory and any allocation or deallocation events that occurred before your process went off the deep end.
+</p>
+<p>This is another example of a script using stack-related logic, but this chapter will focus on the complete cycle of how to explore, learn, then implement a rather powerful custom command.
+</p>
+<h2 class="segment-chapter">Setting up the scripts</h2>
+
+<p>You have a couple of scripts to use (and implement!) for this chapter. Let’s go through each one of them and how you’ll use them:
+</p>
+<ul>
+<li>
+<p><em>msl.py</em>: This is the command (which is an abbreviation for <code>MallocStackLogging</code>) is the script you’ll be working on in this chapter. This has a basic skeleton of the logic.
+</p></li>
+
+<li>
+<p><em>lookup.py</em>: Wait — you already made this command, right? Yes, but I’ll give you my own version of the <code>lookup</code> command that adds a couple of additional options at the price of uglier code. You’ll use one of the options to filter your searches to specific modules within a process.
+</p></li>
+
+<li>
+<p><em>sbt.py</em>: This command will take a backtrace with unsymbolicated symbols, and symbolicate it. You made this in the previous chapter, and you’ll need it at the very end of this chapter. And in case you didn’t work through the previous chapter, it’s included in this chapter’s resources for you to install.
+</p></li>
+
+<li>
+<p><em>search.py</em>: This command will enumerate all objects in the heap and search for a particular subclass. This is a <i>very</i> convenient command for quickly grabbing references to instances of a particular class.
+</p></li>
+</ul>
+
+<div class="note">
+<p><em>Note</em>: These scripts come from <a href="https://github.com/DerekSelander/lldb">https://github.com/DerekSelander/lldb</a>. If I need a tool that I don’t have, I’ll build it, and stick it in the above repo. Check it out for some other novel ideas for LLDB scripts. It&apos;s important to note that a lot of scripts in the above repo have dependencies on other files included in the repo, so if you only download one script, it might not compile until the full set of files is included.
+</p></div>
+
+<p>Now for the usual setup. Take all the Python files found in the <em>starter</em> directory for this chapter and copy them into your <code>~/lldb</code> directory. I am assuming you have the <code>lldbinit.py</code> file already set up, found in Chapter 22, “SB Examples, Improved Lookup.”
+</p>
+<p>Launch an LLDB session in Terminal and go through all the <code>help</code> commands to make sure each script has loaded successfully:
+</p><pre class="code-block">(lldb) help msl
+(lldb) help lookup
+(lldb) help sbt
+(lldb) help search</pre>
+<h2 class="segment-chapter">MallocStackLogging explained</h2>
+
+<p>In case you’re unfamiliar with the <code>MallocStackLogging</code> environment variable, I’ll describe it and show how it’s typically used.
+</p>
+<p>When the <code>MallocStackLogging</code> environment variable is passed into a process, and is set to <code>true</code>, it’ll monitor allocations and deallocations of memory on the heap. Pretty neat!
+</p>
+<p>Included within the <em>starter</em> directory is the <em>50 Shades of Ray</em> Xcode project with some additional logic for this chapter. Open the project.
+</p>
+<p>Before you run it, you’ll need to modify the scheme for your purposes. Select the <em>50 Shades of Ray</em> scheme (make sure there’s no “Stripped” in the name), then press <em>⌘ + Shift + </em><em>&lt;</em> to edit the scheme.
+</p>
+<p>Select <em>Run</em>, then <em>Diagnostics</em>, then select <em>Malloc Stack</em>, then <em>All Allocation and Free History</em>.
+</p><div class="image-100"><img src="graphics/img140.png"  alt="" title="" /></div>
+<p>Once you’ve enabled this environment variable, build the <em>50 Shades of Ray</em> program and run it on the <em>iPhone 8 Simulator</em>.
+</p>
+<p>If the <code>MallocStackLogging</code> environment variable is enabled, you’ll see some output from the LLDB console similar to the following:
+</p><pre class="code-block">ShadesOfRay(12911,0x104e663c0) malloc: stack logs being written into /tmp/stack-logs.12911.10d42a000.ShadesOfRay.gjehFY.index
+
+ShadesOfRay(12911,0x104e663c0) malloc: recording malloc and VM allocation stacks to disk using standard recorder
+
+ShadesOfRay(12911,0x104e663c0) malloc: process 12673 no longer exists, stack logs deleted from /tmp/stack-logs.12673.11b51d000.ShadesOfRay.GVo3li.index</pre>
+<p>Don’t worry about the details of the output; simply look for the presence of output like this as it indicates the <code>MallocStackLogging</code> is working properly.
+</p>
+<p>While the app is running, click the <em>Generate a Ray</em> button at the bottom.
+</p><div class="image-30"><img src="graphics/img141.png"  alt="" title="" /></div>
+<p>Once a new Ray is created (that is, you see an instance of Ray Wenderlich’s amazingly innovative &amp; handsome face pop up in the Simulator), perform the following steps:
+</p>
+<ol>
+<li>
+<p>Select the <em>Debug Memory Graph</em> located at the top of the LLDB console in Xcode.
+</p></li>
+
+<li>
+<p>Select the <em>Show the Debug navigator</em> in the left panel.
+</p></li>
+
+<li>
+<p>At the bottom of the left panel select the <em>Show only content from workspace</em>.
+</p></li>
+
+<li>
+<p>Select the reference to the <em>RayView</em>.
+</p></li>
+
+<li>
+<p>In the right panel of Xcode, make sure the <em>Show the Memory Inspector</em> is selected.
+</p></li>
+</ol>
+<div class="image-100"><img src="graphics/img142.png"  alt="" title="" /></div>
+<p>Once you’ve jumped through all those hoops, you’ll have the exact stack trace of where this <code>RayView</code> instance was created through the <em>Backtrace</em> section in Xcode. How cool is that?! The authors of Xcode (and its <i>many</i> modules) have made our lives a bit easier with these memory debugging features!
+</p>
+<h3 class="segment-chapter">Plan of attack</h3>
+
+<p>You know it’s possible to grab a stack trace for an instantiated object, but you’re going to do one better than Apple.
+</p>
+<p>Your command will be able to turn on the <code>MallocStackLogging</code> functionality at will through LLDB, which means you won’t have to rely on an environment variable. This has the additional benefit that you won’t need to restart your process in case you forget to turn it on during a debug session.
+</p>
+<p>So how are you going to figure out how this <code>MallocStackLogging</code> feature works?
+</p>
+<p>When I am absolutely clueless as to where to begin when exploring built-in code, I follow the rather loose process below and alter queries, depending on the scenario or the output:
+</p>
+<ul>
+<li>
+<p>I look for chokepoints where I can safely assume some logic of interest will be executed in a process I am attached to. If I know I can replicate something of interest, I’ll force that action to occur while monitoring it.
+</p></li>
+
+<li>
+<p>When monitoring the code of interest, I’ll use various tools like LLDB or DTrace (which you’ll learn about in the next chapter) to find the module which holds the code of interest. Again, the module is a dynamic library, framework, <code>NSBundle</code>, or something of that sort.
+</p></li>
+</ul>
+
+<ul>
+<li>
+<p>Once I find the module of interest, I’ll dump all the code within the module, then filter for what I need using various custom scripts like <em>lookup.py</em>.
+</p></li>
+
+<li>
+<p>If I find a particular function that looks relevant to my interests, I’ll first try Googling it. I’ll often find some incredibly useful hints on <a href="https://opensource.apple.com/">https://opensource.apple.com/</a> that reveals how I can use what I’ve found.
+</p></li>
+
+<li>
+<p>Searching through Apple’s opensource URLs, I’ll grab as much context as I can about the code of interest. Sometimes there’s code in the C/C++ source file that will give me an idea of how to formulate the parameters into the function, or perhaps I’ll get a description of the code or its purpose in the header file.
+</p></li>
+
+<li>
+<p>If there’s no documentation to be gained from Googling, I’ll set breakpoints on the code of interest and see if I can trigger that function naturally. Once hit, I’ll explore both the stack frames and registers to see what kind of parameters are being passed in, as well as the context it’s used in.
+</p></li>
+</ul>
+
+<p>You’re going to follow the exact same steps to see where the code for <code>MallocStackLogging</code> resides, explore the module responsible for handling stack tracing logic, then explore any interesting code of interest within that module.
+</p>
+<p>Let’s get cracking!
+</p>
+<h2 class="segment-chapter">Hunting in getenv</h2>
+
+<p><code>MallocStackLogging</code> is an environment variable passed into the process. This means the C <code>getenv</code> function is likely used to check if this argument is supplied, and perform additional logic if it is.
+</p>
+<p>You need to dump all the items queried with <code>getenv</code> when the process starts up. You’ll perform the same action you did in Chapter 15, “Hooking &amp; Executing Code with dlopen &amp; dlsym” by creating a symbolic breakpoint to dump the <code>char*</code> parameter when <code>getenv</code> is being called.
+</p>
+<p>In Xcode, create a symbolic breakpoint with the following logic:
+</p>
+<ul>
+<li>
+<p><em>Symbol</em>: <code>getenv</code>
+</p></li>
+
+<li>
+<p><em>Action</em>: <code>po (char *)$arg1</code>
+</p></li>
+
+<li>
+<p><em>Automatically continue after evaluating actions</em>: yep!
+</p></li>
+</ul>
+<div class="image-60"><img src="graphics/img143.png"  alt="" title="" /></div>
+<p>Build and run the program with the <code>MallocStackLogging</code> variable still checked.
+</p>
+<p>From the output, you can see that somewhere in the startup process, there’s code that checks for the presence of <code>MallocStackLogging</code>.
+</p><div class="image-90"><img src="graphics/img144.png"  alt="" title="" /></div>
+<p>Modify your symbolic breakpoint to only dump the stack trace when the program is checking for the <code>MallocStackLogging</code> environment variable:
+</p>
+<ul>
+<li>
+<p><em>Symbol</em>: <code>getenv</code>
+</p></li>
+
+<li>
+<p><em>Condition</em>: <code>((int)strcmp(&quot;MallocStackLogging&quot;, $arg1) == 0)</code>
+</p></li>
+
+<li>
+<p><em>Action</em>: <code>bt</code>
+</p></li>
+
+<li>
+<p><em>Automatically continue after evaluating actions</em>: <i>¡Sí</i><i>!</i>
+</p></li>
+</ul>
+<div class="image-60"><img src="graphics/img145.png"  alt="" title="" /></div>
+<p>Once your augmented symbolic breakpoint is set up, rerun the app.
+</p>
+<p>You’ll get a couple of stack traces in the console. Check out the very first one:
+</p><pre class="code-block">  * frame #0: 0x0000000112b4da26 libsystem_c.dylib`getenv
+    frame #1: 0x0000000112c7dd53 libsystem_malloc.dylib`_malloc_initialize + 466
+    frame #2: 0x0000000112ddcac1 libsystem_platform.dylib`_os_once + 36
+    frame #3: 0x0000000112c7d849 libsystem_malloc.dylib`default_zone_malloc + 77
+    frame #4: 0x0000000112c7d259 libsystem_malloc.dylib`malloc_zone_malloc + 103
+    frame #5: 0x0000000112c7f44a libsystem_malloc.dylib`malloc + 24
+    frame #6: 0x0000000112aa2947 libdyld.dylib`tlv_load_notification + 286
+    frame #7: 0x000000010e0f68a9 dyld_sim`dyld::registerAddCallback(void (*)(mach_header const*, long)) + 134
+    frame #8: 0x0000000112aa1a0d libdyld.dylib`_dyld_register_func_for_add_image + 61
+    frame #9: 0x0000000112aa1be7 libdyld.dylib`_dyld_initializer + 47</pre>
+<p>Interesting... Check out stack frame 1:
+</p><pre class="code-block">frame #<span class="hljs-number">1</span>: <span class="hljs-number">0x0000000112c7dd53</span> libsystem_malloc.dylib`_malloc_initialize + <span class="hljs-number">466</span></pre>
+<p>If I were an Apple author, I would likely be checking for an environment variable to conditionally see if my code should run right when it’s initialized. This looks like it’s doing the same, plus the module name, <em>libsystem</em><em>_</em><em>malloc.dylib</em> fits the bill for something implementing malloc stack logging related logic. Is this it? Maybe. Worth checking out? Totally!
+</p>
+<p>Take a deeper dive into this module and see what it has to offer you.
+</p>
+<p>Using the fancy, new &amp; improved <code>lookup</code> command, explore all the methods implemented by the <em>libsystem</em><em>_</em><em>malloc.dylib</em> module that you can execute within your process.
+</p>
+<p>Pause the app in the debugger, and then type the following in your LLDB console:
+</p><pre class="code-block">(lldb) lookup . -m libsystem_malloc.dylib</pre>
+<p>In iOS 11.1, I get 313 hits. I <i>could</i> gloss through all these methods, but I am getting increasingly lazy as a debugger person. Let’s just hunt for everything that pertains to the word &quot;log&quot; (for logging) and see what we get. Type the following in LLDB:
+</p><pre class="code-block">(lldb) lookup (?i)log -m libsystem_malloc.dylib</pre>
+<p>I get 48 hits from using a case insensitive search for the word <code>log</code> inside the <code>libsystem_malloc.dylib</code> module.
+</p>
+<p>This hit count is bearable enough to weed through.
+</p>
+<p>Do any of those functions look interesting? Hell yeah! Here are some of the following functions that look interesting to me:
+</p><pre class="code-block">create_log_file
+
+open_log_file_from_directory
+
+__mach_stack_logging_get_frames
+
+turn_off_stack_logging
+
+turn_on_stack_logging</pre>
+<p>Of my top 5, the <em>turn</em><em>_</em><em>on</em><em>_</em><em>stack</em><em>_</em><em>logging</em> and the <em>__</em><em>mach</em><em>_</em><em>stack</em><em>_</em><em>logging</em><em>_</em><em>get</em><em>_</em><em>frames</em> look like they’re worth checking out.
+</p>
+<p>You’ve found the module of interest, as well as some functions worth further exploration. Time to jump over to Google and see what’s out there.
+</p>
+<h3 class="segment-chapter">Googling JIT function candidates</h3>
+
+<p>Google for any code pertaining to <em>turn</em><em>_</em><em>on</em><em>_</em><em>stack</em><em>_</em><em>logging</em>. Take a look at this search query:
+</p><div class="image-55"><img src="graphics/img146.png"  alt="" title="" /></div>
+<p>At the time I wrote this, I got three hits from Google (well, it was actually eight hits with &quot;exclude similar searches&quot; off, but that’s not the point).
+</p>
+<p>These functions are not well-known and are not typically discussed in any circle outside of Apple. In fact, I am rather confident the majority of iOS application developers in Apple don’t know about them either, because when would they use them for writing apps?
+</p>
+<p>This stuff belongs to the low-level C developers of Apple, whom we totally take for granted.
+</p>
+<p>From the Google search, check out the following code from the header file found at <a href="https://opensource.apple.com/source/libmalloc/libmalloc-116/private/stack_logging.h.auto.html">https://opensource.apple.com/source/libmalloc/libmalloc-116/private/stack</a><a href="https://opensource.apple.com/source/libmalloc/libmalloc-116/private/stack_logging.h.auto.html">_</a><a href="https://opensource.apple.com/source/libmalloc/libmalloc-116/private/stack_logging.h.auto.html">logging.h.auto.html</a>:
+</p><pre class="code-block"><span class="hljs-keyword">typedef</span> <span class="hljs-keyword">enum</span> {
+  stack_logging_mode_none = <span class="hljs-number">0</span>,
+  stack_logging_mode_all,
+  stack_logging_mode_malloc,
+  stack_logging_mode_vm,
+  stack_logging_mode_lite
+} stack_logging_mode_type;
+
+<span class="hljs-keyword">extern</span> boolean_t turn_on_stack_logging(stack_logging_mode_type mode);</pre>
+<p>This is some <em>really good</em> information to work with. The <code>turn_on_stack_logging</code> function expects one parameter of type <code>int</code> (C enum). The enum <em>stack</em><em>_</em><em>logging</em><em>_</em><em>mode</em><em>_</em><em>type</em> tells you if you want the <em>stack</em><em>_</em><em>logging</em><em>_</em><em>mode</em><em>_</em><em>all</em> option, it will be at value 1.
+</p>
+<p>You’ll run an experiment by turning off the stack logging environment variable, execute the above function via LLDB, and see if Xcode is recording stack traces for any malloc’d object after you’ve called <code>turn_on_stack_logging</code>.
+</p>
+<p>Before you do that, you’ll first explore the other function, <code>__mach_stack_logging_get_frames</code>.
+</p>
+<h3 class="segment-chapter">Exploring <code>__mach_stack_logging_get_frames</code></h3>
+
+<p>Fortunately, for your exploration efforts, <code>__mach_stack_logging_get_frames</code> can also be found in the same header file. This function signature looks like the following:
+</p><pre class="code-block"><span class="hljs-keyword">extern</span> kern_return_t __mach_stack_logging_get_frames(
+                                        task_t task,   
+                          mach_vm_address_t address, 
+             mach_vm_address_t *stack_frames_buffer,
+                          uint32_t max_stack_frames,
+                                   uint32_t *count);
+    <span class="hljs-comment">/* Gets the last allocation record (malloc, realloc, or free) about address */</span></pre>
+<p>This is a good starting point, but what if there are parameters you’re not 100% sure how to obtain? For example, what’s <code>task_t task</code> all about? This is basically a parameter which specifies the process you want this function to act on. But what if you didn’t know that?
+</p>
+<p>Using Google and searching for any implementation files that contain <code>__mach_stack_logging_get_frames</code> can be a big help when you’re uncertain about things like this.
+</p>
+<p>After a casual Googling, the <a href="https://llvm.org/svn/llvm-project/lldb/trunk/examples/darwin/heap_find/heap/heap_find.cpp">https://llvm.org/svn/llvm-project/lldb/trunk/examples/darwin/heap</a><a href="https://llvm.org/svn/llvm-project/lldb/trunk/examples/darwin/heap_find/heap/heap_find.cpp">_</a><a href="https://llvm.org/svn/llvm-project/lldb/trunk/examples/darwin/heap_find/heap/heap_find.cpp">find/heap/heap</a><a href="https://llvm.org/svn/llvm-project/lldb/trunk/examples/darwin/heap_find/heap/heap_find.cpp">_</a><a href="https://llvm.org/svn/llvm-project/lldb/trunk/examples/darwin/heap_find/heap/heap_find.cpp">find.cpp</a> URL provides insight to the first parameter that’s expected within this function.
+</p>
+<p>This file contains the following code:
+</p><pre class="code-block">task_t task = mach_task_self();
+<span class="hljs-comment">/* Omitted code.... */</span>
+    stack_entry-&gt;address = addr;
+    stack_entry-&gt;type_flags = stack_logging_type_alloc;
+    stack_entry-&gt;argument = <span class="hljs-number">0</span>;
+    stack_entry-&gt;num_frames = <span class="hljs-number">0</span>;
+    stack_entry-&gt;frames[<span class="hljs-number">0</span>] = <span class="hljs-number">0</span>;
+
+    err = __mach_stack_logging_get_frames(task, 
+                       (mach_vm_address_t)addr,
+                           stack_entry-&gt;frames, 
+                                    MAX_FRAMES,
+                      &amp;stack_entry-&gt;num_frames);
+
+    <span class="hljs-keyword">if</span> (err == <span class="hljs-number">0</span> &amp;&amp; stack_entry-&gt;num_frames &gt; <span class="hljs-number">0</span>) {
+      <span class="hljs-comment">// Terminate the frames with zero if there is room</span>
+      <span class="hljs-keyword">if</span> (stack_entry-&gt;num_frames &lt; MAX_FRAMES)
+        stack_entry-&gt;frames[stack_entry-&gt;num_frames] = <span class="hljs-number">0</span>;
+    } <span class="hljs-keyword">else</span> {
+      g_malloc_stack_history.clear();
+    }
+  }
+}</pre>
+<p>The <code>task_t</code> parameter has a easy way to get the task representing the current process through the <code>mach_task_self</code> function located in <em>libsystem</em><em>_</em><em>kernel.dylib</em>. You can confirm this yourself with the <code>lookup</code> LLDB command.
+</p>
+<h2 class="segment-chapter">Testing the functions</h2>
+
+<p>To prevent you from getting bored to tears, I’ve already implemented the logic for the <code>__mach_stack_logging_get_frames</code> inside the app.
+</p><div class="image-40"><img src="graphics/img147.png"  alt="" title="" /></div>
+<p>Hopefully, you still have the application running. If not, get the app running with <code>MallocStackLogging</code> still enabled.
+</p>
+<p>It’s always a good idea to build your proof-of-concept JIT code in Xcode first, and once it’s working, then (and only then!) transfer it to your LLDB script. You’re gonna hate your life if you try to write your POC JIT script code straight in LLDB first. Trust me.
+</p>
+<p>In Xcode, navigate to the <em>stack</em><em>_</em><em>logger.cpp</em> file. <code>__mach_stack_logging_get_frames</code> was written in C++, so you’ll need to use C++ code to execute it.
+</p>
+<p>The only function in this file is <code>trace_address</code>:
+</p><pre class="code-block"><span class="hljs-keyword">void</span> trace_address(mach_vm_address_t addr) {
+
+  <span class="hljs-keyword">typedef</span> <span class="hljs-keyword">struct</span> LLDBStackAddress {
+    mach_vm_address_t *addresses;
+    uint32_t count = <span class="hljs-number">0</span>;
+  } LLDBStackAddress;   <span class="hljs-comment">// 1 </span>
+  
+  LLDBStackAddress stackaddress; <span class="hljs-comment">// 2</span>
+  __unused mach_vm_address_t address = (mach_vm_address_t)addr;
+  __unused task_t task = mach_task_self_;  <span class="hljs-comment">// 3</span>
+
+  stackaddress.addresses = (mach_vm_address_t *)calloc(<span class="hljs-number">100</span>,
+                                <span class="hljs-keyword">sizeof</span>(mach_vm_address_t)); <span class="hljs-comment">// 4</span>
+
+  __mach_stack_logging_get_frames(task, 
+                               address, 
+                stackaddress.addresses, 
+                                   <span class="hljs-number">100</span>, 
+                  &amp;stackaddress.count); <span class="hljs-comment">// 5</span>
+  
+  <span class="hljs-comment">// 6</span>
+  <span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i = <span class="hljs-number">0</span>; i &lt; stackaddress.count; i++) {
+    
+    printf(<span class="hljs-string">"[%d] %llu\n"</span>, i, stackaddress.addresses[i]);
+  }
+  
+  free(stackaddress.addresses); <span class="hljs-comment">// 7</span>
+}</pre>
+<p>Breakdown time!
+</p>
+<ol>
+<li>
+<p>As you know, LLDB only lets you return one object to be evaluated. But, as a creative string-theory version of yourself, can create C structs that contain any types you want to be returned.
+</p></li>
+
+<li>
+<p>Declare an instance of said struct for use within the function.
+</p></li>
+
+<li>
+<p>Remember <code>mach_task_self</code> that was referenced earlier? The global variable <code>mach_task_self_</code> is the value returned when calling <code>mach_task_self</code>.
+</p></li>
+
+<li>
+<p>Since you’re in a lower level, you don’t have ARC to help you allocate items on the heap. You’re allocating 100 <code>mach_vm_address_t</code>’s, which is more than enough to handle any stack trace.
+</p></li>
+
+<li>
+<p>The <code>__mach_stack_logging_get_frames</code> then executes. The <code>addresses</code> array of the <code>LLDBStackAddress</code> struct will be populated with the addresses if there’s any stack trace information available.
+</p></li>
+
+<li>
+<p>Print out all the addresses that were found
+</p></li>
+
+<li>
+<p>Finally, the <code>mach_vm_address_t</code> objects you created are freed.
+</p></li>
+</ol>
+
+<p>Time to give it a whirl!
+</p>
+<h3 class="segment-chapter">LLDB testing</h3>
+
+<p>Make sure the app is running, then tap the <em>Generate a Ray</em><em>!</em> button. Pause execution and enter the following into LLDB:
+</p><pre class="code-block">(lldb) search RayView -b</pre>
+<p>The search script will enumerate all objects of a certain type in the heap. This command will hunt for all <code>RayView</code> instances that are currently alive.
+</p>
+<p>The <code>-b</code> option will give you the <code>--brief</code> functionality, free of the class’s <code>description</code> or <code>debugDescription</code> method. Depending on the amount of Ray Wenderlich faces on your Simulator, you’ll get a variable amount of hits.
+</p>
+<p>I have three wondrously magical Ray Wenderlich faces on my simulator, so I get the following output:
+</p><pre class="code-block">(lldb) search RayView -b
+RayView * [0x00007fa838414330]
+RayView * [0x00007fa8384125f0]
+RayView * [0x00007fa83860c000]</pre>
+<p>Grab any one of those addresses and execute the logic in the <code>trace_address</code> function:
+</p><pre class="code-block">(lldb) po trace_address(0x00007fa838414330)</pre>
+<p>You’ll get output that looks like the following truncated snippet:
+</p><pre class="code-block">[0] 4533269637
+[1] 4460190625
+[2] 4460232164
+[3] 4454012240
+[4] 4478307618
+[5] 4482741703
+[6] 4478307618
+[7] 4479898204
+[8] 4479898999
+[9] 4479899371
+...</pre>
+<p>These are the actual addresses of the code where this object is created. Verify the first address is code in memory using <code>image lookup</code>:
+</p><pre class="code-block">(lldb) image lookup -a 4533269637</pre>
+<p>You’ll get the details about that function:
+</p><pre class="code-block">Address: libsystem_malloc.dylib[0x000000000000f485] (libsystem_malloc.dylib.__TEXT.__text + 56217)
+Summary: libsystem_malloc.dylib`calloc + 30</pre>
+<p>There’s more than one way to skin a memory address. Copy the address at frame three and use <code>SBAddress</code> to get the information out of this address:
+</p><pre class="code-block">(lldb) script print lldb.SBAddress(4454012240, lldb.target)</pre>
+<p>You’ll get stack frame 3, like so:
+</p><pre class="code-block">ShadesOfRay`-[ViewController generateRayViewTapped:] + 64 at ViewController.m:38</pre>
+<h3 class="segment-chapter">Navigating a C array with lldb.value</h3>
+
+<p>You’ll again use the <em>lldb.value</em> class to parse the return value of this C struct which was generated inline while executing this function.
+</p>
+<p>Set a GUI breakpoint at the end of the <code>trace_address</code> function.
+</p><div class="image-90"><img src="graphics/img148.png"  alt="" title="" /></div>
+<p>Use LLDB to execute the same function, but honor breakpoints, and remember to replace the address with one of your <code>RayView</code> instances:
+</p><pre class="code-block">(lldb) e -lobjc++ -O -i0 -- trace_address(0x00007fa838414330)</pre>
+<p>Execution will stop on the final line of <code>trace_address</code>. You know the drill. Grab the reference to the C struct <code>LLDBStackAddress</code>, <code>stackaddress</code>.
+</p><pre class="code-block">(lldb) script print lldb.frame.FindVariable(&apos;stackaddress&apos;)</pre>
+<p>If successful, you’ll get the synthetic format of the <code>stackaddress</code> variable:
+</p><pre class="code-block">(LLDBStackAddress) stackaddress = {
+  addresses = 0x00007fa838515cd0
+  count = 25
+}</pre>
+<p>Cast this struct into a <code>lldb.value</code> and call the reference <code><em>a</em></code>:
+</p><pre class="code-block">(lldb) script a = lldb.value(lldb.frame.FindVariable(&apos;stackaddress&apos;))</pre>
+<p>Ensure <code>a</code> is valid:
+</p><pre class="code-block">(lldb) script print a</pre>
+<p>You can now easily reference the variables you declared in the <code>LLDBStackAddress</code> struct inside the <code>lldb.value</code>. Type the following into LLDB:
+</p><pre class="code-block">(lldb) script print a.count</pre>
+<p>You’ll get the stack frame count:
+</p><pre class="code-block">(uint32_t) count = 25</pre>
+<p>What about the <code>addresses</code> array inside the <code>LLDBStackAddress</code> struct?
+</p><pre class="code-block">(lldb) script print a.addresses[0]</pre>
+<p>That’s the memory address of the first frame. What about that <code>generateRayViewTapped:</code> method found in frame 3?
+</p><pre class="code-block">(lldb) script print a.addresses[3]</pre>
+<p>You’ll get something similar to:
+</p><pre class="code-block">(mach_vm_address_t) [3] = 4454012240</pre>
+<p>Do you see how this tool is coming together? From finding chokepoints of items of interest, to exploring code in modules, to researching tidbits of useful information in <a href="https://opensource.apple.com/">https://opensource.apple.com/</a>, to implementing proof of concepts in Xcode before jumping to LLDB Python code, there’s a lot of power under the hood.
+</p>
+<p>Don’t slow down — it’s <i>command implementin’</i> time!
+</p>
+<h2 class="segment-chapter">Turning numbers into stack frames</h2>
+
+<p>Included within the <em>starter</em> directory for this chapter is the <em>msl.py</em> script for malloc script logging. You’ve already installed this <code>msl.py</code> script earlier in the “Setting up the scripts” section.
+</p>
+<p>Unfortunately, this script doesn’t do much at the moment, as it doesn’t produce any output. Time to change that.
+</p>
+<p>Open up <code>~/lldb/msl.py</code> in your favorite editor. Find <code><em>handle_command</em></code> and add the following code to it:
+</p><pre class="code-block">command_args = shlex.split(command)
+parser = generateOptionParser()
+<span class="hljs-keyword">try</span>:
+    (options, args) = parser.parse_args(command_args)
+<span class="hljs-keyword">except</span>:
+    result.SetError(parser.usage)
+    <span class="hljs-keyword">return</span>
+
+cleanCommand = args[<span class="hljs-number">0</span>]
+process = debugger.GetSelectedTarget().GetProcess()
+frame = process.GetSelectedThread().GetSelectedFrame()
+target = debugger.GetSelectedTarget()</pre>
+<p>All this logic shouldn’t be new to you, as it’s the “preamble” required to start up the command. The only thing of interest is you opted to omit the <code>posix=False</code> argument that’s sometimes used in the <code>shlex.split(command)</code>. There’s no need to provide this parameter, since this command won’t be handling any weird backslash or dash characters. This means the parsing of the output from the <code>options</code> and <code>args</code> variables is much cleaner as well.
+</p>
+<p>Now that you have the basic script going, implement the meat of this script right below the code you just wrote:
+</p><pre class="code-block"><span class="hljs-comment"># 1</span>
+script = generateScript(cleanCommand, options)
+
+<span class="hljs-comment"># 2</span>
+sbval = frame.EvaluateExpression(script, generateOptions())
+
+<span class="hljs-comment"># 3</span>
+<span class="hljs-keyword">if</span> sbval.error.fail: 
+    result.AppendMessage(str(sbval.error))
+    <span class="hljs-keyword">return</span>
+
+val = lldb.value(sbval)
+addresses = []
+
+<span class="hljs-comment"># 4</span>
+<span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> range(val.count.sbvalue.unsigned):
+    address = val.addresses[i].sbvalue.unsigned
+    sbaddr = target.ResolveLoadAddress(address)
+    loadAddr = sbaddr.GetLoadAddress(target)
+    addresses.append(loadAddr)
+
+<span class="hljs-comment"># 5</span>
+retString = processStackTraceStringFromAddresses(
+                                        addresses, 
+                                           target)
+
+<span class="hljs-comment"># 6</span>
+freeExpr = <span class="hljs-string">'free('</span>+str(val.addresses.sbvalue.unsigned)+<span class="hljs-string">')'</span>
+frame.EvaluateExpression(freeExpr, generateOptions())
+result.AppendMessage(retString)</pre>
+<p>Here are the items of interest:
+</p>
+<ol>
+<li>
+<p>Use the <code>generateScript</code> function I supplied, which returns a string containing roughly the same code as in the <code>trace_address</code> function.
+</p></li>
+
+<li>
+<p>Execute the code. You know this will return an <code>SBValue</code>.
+</p></li>
+
+<li>
+<p>Do a sanity check to see if the <code>EvaluateExpression</code> fails. If it does, dump out the error and exit early.
+</p></li>
+
+<li>
+<p>This for-loop will enumerate the memory addresses in the <code>val</code> object, which are the output of the <code>script</code> code, and pull them out into the <code>addresses</code> list.
+</p></li>
+</ol>
+
+<ol>
+<li>
+<p>Now that the addresses are pulled out into a list, you pass that list to a predefined function for processing. This will return the stack trace string you’ll spit out.
+</p></li>
+
+<li>
+<p>Finally, you manually allocate memory, as you are a good memory citizen and always clean up after yourself. Most of these scripts you’ve written leak memory, but now that you’re getting more advanced with this stuff, it’s time to do the right thing and <code>free</code> any allocated memory.
+</p></li>
+</ol>
+
+<p>Jump back to the Xcode LLDB console and reload your stuff:
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>Provided you have no errors, grab a reference to a <code>RayView</code> using the <code>search</code> LLDB command:
+</p><pre class="code-block">(lldb) search RayView -b</pre>
+<p>Just for kicks, here’s another way to search for all <code>UIView</code>s whose class is implemented in the <code>ShadesOfRay</code> module:
+</p><pre class="code-block">(lldb) search UIView -m ShadesOfRay -b</pre>
+<p>Once you have a reference to a <code>RayView</code>, run your newly created <code>msl</code> command on it, like so:
+</p><pre class="code-block">(lldb) msl 0x00007fa838414330</pre>
+<p>You’ll get your expected output just like in Xcode!
+</p><pre class="code-block">frame #0 : 0x11197d485 libsystem_malloc.dylib`calloc + 30
+frame #1 : 0x10d3cbba1 libobjc.A.dylib`class_createInstance + 85
+frame #2 : 0x10d3d5de4 libobjc.A.dylib`_objc_rootAlloc + 42
+frame #3 : 0x10cde7550 ShadesOfRay`-[ViewController generateRayViewTapped:] + 64
+frame #4 : 0x10e512d22 UIKit`-[UIApplication sendAction:to:from:forEvent:] + 83</pre>
+<p>Congratulations! You’ve created a script that will give you the stack trace for an object. Now it’s time to level up and give this script some cool options!
+</p>
+<h2 class="segment-chapter">Stack trace from a Swift object</h2>
+
+<p>OK — I know you want me to talk about Swift code. You’ll cover a Swift example as well.
+</p>
+<p>Included in the 50 Shades of Ray app is a Swift module, ingeniously named <em>SomeSwiftModule</em>. Within this module is a class named <code>SomeSwiftCode</code> with a static variable to get your singleton quota going.
+</p>
+<p>The code in <em>SomeSwiftCode.swift</em> is about as simple as you can get:
+</p><pre class="code-block"><span class="hljs-keyword">public</span> <span class="hljs-keyword">final</span> <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">SomeSwiftCode</span> </span>{
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">init</span>() {}
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">let</span> shared = <span class="hljs-type">SomeSwiftCode</span>()
+}</pre>
+<p>You’ll use LLDB to call this singleton and examine the stack trace where this function was created.
+</p>
+<p>First off, you have to import your Swift modules! Enter the following into LLDB:
+</p><pre class="code-block">(lldb) e -lswift -O -- import SomeSwiftModule</pre>
+<p>You’ll get no result if the above was successful.
+</p>
+<p>In LLDB, access the singleton, like so:
+</p><pre class="code-block">(lldb) e -lswift -O -- SomeSwiftCode.shared</pre>
+<p>You’ll get the address to this object:
+</p><pre class="code-block">&lt;SomeSwiftCode: 0x600000033640&gt;</pre>
+<p>Now you’ll pass this address in to the <code>msl</code> command. But simply copying and pasting from the current output is waaaaaaaaaaaaaaaay too easy. Use the <code>search</code> command instead and search for all subclasses of <code>SwiftObject</code>:
+</p><pre class="code-block">(lldb) search SwiftObject</pre>
+<p>You’ll get something like the following:
+</p><pre class="code-block">&lt;__NSArrayM 0x6000004578b0&gt;(
+SomeSwiftModule.SomeSwiftCode
+)</pre>
+<p>Again, Swift tries to hide the pointer from you in <code>description</code>. That’s part of its magic!
+</p>
+<p>Use the <code>--brief</code> (<code>-b</code>) option one final time in the <code>search</code> command to grab the instance and ignore the object’s <code>description</code> method.
+</p><pre class="code-block">(lldb) search SwiftObject -b</pre>
+<p>This will grab the mangled name, but it’s the same reference in memory!
+</p><pre class="code-block">_TtC15SomeSwiftModule13SomeSwiftCode * [0x0000600000033640]</pre>
+<p>Use the <code>msl</code> command on this address:
+</p><pre class="code-block">(lldb) msl 0x0000600000033640</pre>
+<p>You’ll get your expected stack trace.
+</p><div class="image-100"><img src="graphics/img149.png"  alt="" title="" /></div>
+<p>The highlighted frame here is clearly the frame where you call the singleton accessor from LLDB. Yours might be different.
+</p>
+<p>Let’s jump to one final topic I want to discuss briefly: how to build these scripts so you &quot;Don’t Repeat Yourself&quot; when creating functionality in your LLDB scripts.
+</p>
+<h2 class="segment-chapter">DRY Python code</h2>
+
+<p>Stop the app! In the schemes, select the <em>Stripped 50 Shades of Ray</em> Xcode scheme.
+</p>
+<p>Ensure the <code>MallocStackLogging</code> environment variable is unchecked in the <code>Stripped 50 Shades of Ray</code> scheme.
+</p><div class="image-90"><img src="graphics/img150.png"  alt="" title="" /></div>
+<p>Good. Ray approves.
+</p>
+<p>Time to try out the <code>turn_on_stack_logging</code> function. Build and run the application.
+</p>
+<p>As you found out in the previous chapter, the &quot;Stripped 50 Shades of Ray&quot; scheme strips the main executable’s contents so there’s no debugging information available. Remember that factoid when you use the <code>msl</code> command.
+</p>
+<p>Once the application is up and running, tap the <em>Generate a Ray</em><em>!</em> button to create a new instance of the <code>RayView</code>. Since the <code>MallocStackLogging</code> isn’t enabled, let’s see what happens...
+</p>
+<p>Pause execution and search for all <code>RayView</code>s by typing the following into LLDB:
+</p><pre class="code-block">(lldb) search RayView -b</pre>
+<p>You’ll get something like:
+</p><pre class="code-block">RayView * [0x00007fc23eb00620]</pre>
+<p>See if the <code>msl</code> command works on this address:
+</p><pre class="code-block">(lldb) msl 0x00007fc23eb00620</pre>
+<p>Nothing. That makes sense though, because the environment variable was not supplied to the process. Time to circle back and call <code>turn_on_stack_logging</code> to see what it does. Type the following in LLDB:
+</p><pre class="code-block">(lldb) po turn_on_stack_logging(1)</pre>
+<p>You’ll get some output similar to the kind you get when you supply your process with the <code>MallocStackLogging</code> environment variable:
+</p><div class="image-100"><img src="graphics/img151.png"  alt="" title="" /></div>
+<p>Resume execution and create another instance of <code>RayView</code> by tapping the bottom button.
+</p>
+<p>Once you’ve done that, pause execution and search for all instances of <code>RayView</code> again.
+</p>
+<p>You’ll get a new address this time. Hopefully with the stack logging enabled, you’ll get a backtrace for this.
+</p>
+<p>Copy this new address and apply the <code>msl</code> command to it.
+</p><pre class="code-block">(lldb) msl 0x00007f8250f0a170</pre>
+<p>This will give you the stack trace!
+</p><div class="image-100"><img src="graphics/img152.png"  alt="" title="" /></div>
+<p>This is awesome! You can enable malloc logging at will to monitor any allocation or deallocation events without having to restart your process.
+</p>
+<p>Wait wait wait. Hold on a second... there’s a symbol that’s stripped.
+</p><div class="image-100"><img src="graphics/img153.png"  alt="" title="" /></div>
+<p>Ray don’t like no stripped functions.
+</p>
+<p>If you recall in the previous chapter, you created the <code>sbt</code> command which symbolicated a stack trace. In the <code>sbt.py</code> script, you created the <code>processStackTraceStringFromAddresses</code> function which took a list of numbers (representing memory addresses for code) and the <code>SBTarget</code>. This function then returned a potentially symbolicated string for the stack trace.
+</p>
+<p>You’ve already done the hard work to write this function, so why not include this work in the <code>msl.py</code> script to optionally execute it?
+</p>
+<p>Jump to the very top of the <code>msl.py</code> function and add the following import statement:
+</p><pre class="code-block"><span class="hljs-keyword">import</span> sbt</pre>
+<p>In the <code>handle_command</code> function in <em>msl.py</em>, hunt for the following code:
+</p><pre class="code-block">retString = sbt.processStackTraceStringFromAddresses(
+                                            addresses, 
+                                               target)</pre>
+<p>Replace that code with the following:
+</p><pre class="code-block"><span class="hljs-keyword">if</span> options.resymbolicate:
+    retString = sbt.processStackTraceStringFromAddresses(
+                                                addresses, 
+                                                   target)
+<span class="hljs-keyword">else</span>:
+    retString = processStackTraceStringFromAddresses(
+                                        addresses, 
+                                           target)</pre>
+<p>You’re conditionally checking for the <code>options.resymbolicate</code> option (which I’ve already set up for you). If <code>True</code>, then call the logic in the <code>sbt</code> module to see if it can generate a string of resymbolicated functions.
+</p>
+<p>Since you wrote that function to be generic and handle a list of Python numbers, you can easily pass this information from your <code>msl</code> script.
+</p>
+<p>Before you test this out, there’s one final component to implement. You need to make a convenience command to enable the <code>turn_on_stack_logging</code>.
+</p>
+<p>Jump up to the <em>__</em><em>lldb</em><em>_</em><em>init</em><em>_</em><em>module</em> function (still in <code>msl.py</code>) and add the following line of code:
+</p><pre class="code-block">debugger.HandleCommand(<span class="hljs-string">'command alias enable_logging expression -lobjc -O -- extern void turn_on_stack_logging(int); turn_on_stack_logging(1);'</span>)</pre>
+<p>This declares a convenience command to turn on malloc stack logging.
+</p>
+<p>Woot! Done! Jump back to Xcode and reload your script:
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>Use the <code>--resymbolicate</code> option on the previous <code>RayView</code> to see the stack in its fully symbolicated form.
+</p><pre class="code-block">(lldb) msl 0x00007f8250f0a170 -r</pre><div class="image-100"><img src="graphics/img154.png"  alt="" title="" /></div>
+<p>I am literally crying with happiness in the face of this wholly beautiful stack trace. Snif.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>Hopefully, this full circle of idea, research &amp; implementation has proven useful and even inspired you to create your own scripts. There’s a lot of power hidden quietly away in the many frameworks that already exist on your <code>[i|mac|tv|watch]OS</code> device.
+</p>
+<p>All you need to do is find these hidden gems and exploit them for some crazy commercial debugging tools, or even to use in reverse engineering to better understand what’s happening.
+</p>
+<p>Here’s a list of directories you should explore on your actual iOS device:
+</p>
+<ul>
+<li>
+<p><code>/Developer/</code>
+</p></li>
+
+<li>
+<p><code>/usr/lib/</code>
+</p></li>
+
+<li>
+<p><code>/System/Library/PrivateFrameworks/</code>
+</p></li>
+</ul>
+
+<p>Go forth my little debuggers, and build something that completely blows my mind!
+</p></body></html>

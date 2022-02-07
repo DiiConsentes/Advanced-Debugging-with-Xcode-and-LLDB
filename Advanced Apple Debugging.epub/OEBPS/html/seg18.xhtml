@@ -1,0 +1,440 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 10:  Assembly Register Calling Convention</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 10: Assembly Register Calling Convention</h1>
+
+<p>Now that you’ve gained a basic understanding of how to maneuver around the debugger, it’s time to take a step down the executable Jenga tower and explore the 1s and 0s that make up your source code. This section will focus on the low-level aspects of debugging.
+</p>
+<p>In this chapter, you’ll look at registers the CPU uses and explore and modify parameters passed into function calls. You’ll also learn about common Apple computer architectures and how their registers are used within a function. This is known as an architecture’s <em>calling convention</em>.
+</p>
+<p>Knowing how assembly works and how a specific architecture’s calling convention works is an extremely important skill to have. It lets you observe function parameters you don’t have the source code for and lets you modify the parameters passed into a function. In addition, it’s sometimes even better to go to the assembly level because your source code could have different or unknown names for variables you’re not aware of.
+</p>
+<p>For example, let’s say you always wanted to know the second parameter of a function call, regardless of what the parameter’s name is. Knowledge of assembly gives you a great base layer to manipulate and observe parameters in functions.
+</p>
+<h2 class="segment-chapter">Assembly 101</h2>
+
+<p>Wait, so what’s assembly again?
+</p>
+<p>Have you ever stopped in a function you didn’t have source code for, and saw an onslaught of memory addresses followed by scary, short commands? Did you huddle in a ball and quietly whisper to yourself you’ll never look at this dense stuff again? Well... that stuff is known as assembly!
+</p>
+<p>Here’s a picture of a backtrace in Xcode, which showcases the assembly of a function within the Simulator.
+</p><div class="image-100"><img src="graphics/img31.png"  alt="" title="" /></div>
+<p>Looking at the image above, the assembly can be broken into several parts. Each line in a assembly instruction contains an <em>opcode</em>, which can be thought of as an extremely simple instruction for the computer.
+</p>
+<p>So what does an opcode look like? An opcode is an instruction that performs a simple task on the computer. For example, consider the following snippet of assembly:
+</p><pre class="code-block">pushq   %rbx
+subq    $0x228, %rsp 
+movq    %rdi, %rbx </pre>
+<p>In this block of assembly, you see three opcodes, <code><em>pushq</em></code>, <code><em>subq</em></code>, and <code><em>movq</em></code>. Think of the opcode items as the action to perform. The things following the opcode are the source and destination labels. That is, these are the items the opcode acts upon.
+</p>
+<p>In the above example, there&apos;s several <em>registers</em>, shown as <code><em>rbx</em></code>, <code><em>rsp</em></code>, <code><em>rdi</em></code>, and <code><em>rbp</em></code>. The <code><em>%</em></code> before each tells you this is a register.
+</p>
+<p>In addition, you can also find a numeric constant in hexadecimal shown as <code><em>0x228</em></code>. The <code><em>$</em></code> before this constant tells you it’s an absolute number.
+</p>
+<p>There’s no need to know what this code is doing at the moment, since you’ll first need to learn about the registers and calling convention of functions. Then you’ll learn more about the opcodes and write your own assembly in a future chapter.
+</p>
+<div class="note">
+<p><em>Note</em>: In the above example, take note there are a bunch of <code>%</code>’s and <code>$</code>’s that precede the registers and constants. This is how the disassembler formats the assembly. However, there are two main ways that assembly can be showcased. The first is <em>Intel</em> assembly, and the second is <em>AT</em><em>&amp;</em><em>T</em> assembly.
+</p>
+<p>By default, Apple’s disassembler tools ship with assembly displayed in the AT&amp;T format, as it is in the example above. Although this is a good format to work with, it can be a little hard on the eyes. In the next chapter, you’ll change the assembly format to Intel, and will work exclusively with Intel assembly syntax from there on out.
+</p></div>
+
+<h3 class="segment-chapter">x86_64 vs ARM64</h3>
+
+<p>As a developer for Apple platforms, there are two primary architectures you’ll deal with when learning assembly: <em>x86</em><em>_</em><em>64</em> architecture and <em>ARM64</em> architecture. x86_64 is the architecture most likely used on your macOS computer, unless you are running an “ancient” Macintosh.
+</p>
+<p>x86_64 is a <em>64-bit</em> architecture, which means every address can hold up to 64 1s or 0s. Alternatively, older Macs use a <em>32-bit</em> architecture, but Apple stopped making 32-bit Macs at the end of the 2010’s. Programs running under macOS are likely to be 64-bit compatible, including programs on the Simulator. That being said, even if your macOS is x86_64, it can still run 32-bit programs.
+</p>
+<p>If you have any doubt of what hardware architecture you’re working with, you can get your computer’s hardware architecture by running the following command in Terminal:
+</p><pre class="code-block">uname -m </pre>
+<p>ARM64 architecture is used on mobile devices such as your iPhone where limiting energy consumption is critical.
+</p>
+<p>ARM emphasizes power conservation, so it has a reduced set of opcodes that help facilitate energy consumption over complex assembly instructions. This is good news for you, because there are fewer instructions for you to learn on the ARM architecture.
+</p>
+<p>Here’s a screenshot of the same method shown earlier, except this time in ARM64 assembly on an iPhone 7:
+</p><div class="image-70"><img src="graphics/img32.png"  alt="" title="" /></div>
+<p>You might not be able to differentiate between the two architectures now, but you’ll soon know them like the back of your hand.
+</p>
+<p>Apple originally shipped 32-bit ARM processors in many of their iOS devices, but have since moved to 64-bit ARM processors. 32-bit iOS devices are almost obsolete as Apple has phased them out through various iOS versions. For example, the iPhone 5 was the final a 32-bit iOS device which is not supported in iOS 11. The &quot;lowest&quot; iPhone that supports iOS 11 is the iPhone 5s, a 64-bit device.
+</p>
+<p>In recent years, 32-bit devices have manifested themselves in other Apple products. The first two generations of the Apple Watch are 32-bit devices, however, the 3rd generation is a 64-bit device. In addition, the (admittedly gimmicky) Apple touch bar found on newer macOS devices also use a 32-bit architecture.
+</p>
+<p>Since it’s best to focus on what you’ll need for the future, this book will focus primarily on 64-bit assembly for both architectures. In addition, you’ll start learning x86_64 assembly first and then transition to learning ARM64 assembly so you don’t get confused. Well, not <i>too</i> confused.
+</p>
+<h2 class="segment-chapter">x86_64 register calling convention</h2>
+
+<p>Your CPU uses a set of registers in order to manipulate data in your running program. These are storage holders, just like the RAM in your computer. However they’re located on the CPU itself very close to the parts of the CPU that need them. So these parts of the CPU can access these registers incredibly quickly.
+</p>
+<p>Most instructions involve one or more registers and perform operations such as writing the contents of a register to memory, reading the contents of memory to a register or performing arithmetic operations (add, subtract, etc.) on two registers.
+</p>
+<p>In <em>x64</em> (from here on out, x64 is an abbreviation for x86_64), there are <em>16 general purpose registers</em> used by the machine to manipulate data.
+</p>
+<p>These registers are <em>RAX</em>, <em>RBX</em>, <em>RCX</em>, <em>RDX</em>, <em>RDI</em>, <em>RSI</em>, <em>RSP</em>, <em>RBP</em> and <em>R8</em> through <em>R15</em>. These names will not mean much to you now, but you’ll explore the importance of each register soon.
+</p>
+<p>When you call a function in x64, the manner and use of the registers follows a very specific convention. This dictates where the parameters to the function should go and where the return value from the function will be when the function finishes. This is important so code compiled with one compiler can be used with code compiled with another compiler.
+</p>
+<p>For example, take a look at this simple Objective-C code:
+</p><pre class="code-block"><span class="hljs-built_in">NSString</span> *name = <span class="hljs-string">@"Zoltan"</span>;
+<span class="hljs-built_in">NSLog</span>(<span class="hljs-string">@"Hello world, I am %@. I'm %d, and I live in %@."</span>, name, <span class="hljs-number">30</span>, <span class="hljs-string">@"my father's basement"</span>);</pre>
+<p>There are four parameters passed into the <code>NSLog</code> function call. Some of these values are passed as-is, while one parameter is stored in a local variable, then referenced as a parameter in the function. However, when viewing code through assembly, the computer doesn’t care about names for variables; it only cares about locations in memory.
+</p>
+<p>The following registers are used as parameters when a function is called in x64 assembly. Try and commit these to memory, as you’ll use these frequently in the future:
+</p>
+<ul>
+<li>
+<p>First Argument: <code>RDI</code>
+</p></li>
+
+<li>
+<p>Second Argument: <code>RSI</code>
+</p></li>
+
+<li>
+<p>Third Argument: <code>RDX</code>
+</p></li>
+
+<li>
+<p>Fourth Argument: <code>RCX</code>
+</p></li>
+
+<li>
+<p>Fifth Argument: <code>R8</code>
+</p></li>
+
+<li>
+<p>Sixth Argument: <code>R9</code>
+</p></li>
+</ul>
+
+<p>If there are more than six parameters, then the program’s stack is used to pass in additional parameters to the function.
+</p>
+<p>Going back to that simple Objective-C code, you can re-imagine the registers being passed like the following pseudo-code:
+</p><pre class="code-block">RDI = <span class="hljs-string">@"Hello world, I am %@. I'm %d, and I live in %@."</span>;
+RSI = <span class="hljs-string">@"Zoltan"</span>;
+RDX = <span class="hljs-number">30</span>;
+RCX = <span class="hljs-string">@"my father's basement"</span>;
+<span class="hljs-built_in">NSLog</span>(RDI, RSI, RDX, RCX);</pre>
+<p>As soon as the <code>NSLog</code> function starts, the given registers will contain the appropriate values as shown above.
+</p>
+<p>However, as soon as the <em>function prologue</em> (the beginning section of a function that prepares the stack and registers) finishes executing, the values in these registers will likely change. The generated assembly will likely overwrite the values stored in these registers, or just simply discard these references when the code has no more need of them.
+</p>
+<p>This means as soon as you leave the start of a function (through stepping over, stepping in, or stepping out), you can no longer assume these registers will hold the expected values you want to observe, unless you actually look at the assembly code to see what it’s doing.
+</p>
+<p>Exploring registers with this calling convention heavily influences your debugging (and breakpoint) strategy. If you were to automate any type of breaking and exploring, you would have to stop at the start of a function call in order to inspect or modify the parameters without having to actually dive into the assembly.
+</p>
+<h2 class="segment-chapter">Objective-C and registers</h2>
+
+<p>As you learned in the previous section, registers use a specific calling convention. You can take that same knowledge and apply it to other languages as well.
+</p>
+<p>When Objective-C executes a method, a special C function is executed named <code><em>objc_msgSend</em></code>. There’s actually several different types of these functions, but more on that later. This is the heart of Objective-C&apos;s dynamic message dispatch. As the first parameter, <code>objc_msgSend</code> takes the reference of the object upon which the message is being sent. This is followed by a <em>Selector</em>, which is simply just a <code>char *</code> specifying the name of the method being called on the object. Finally, <code>objc_msgSend</code> takes a variable amount of arguments within the function if the selector specifies there should be parameters.
+</p>
+<p>Let’s look at a concrete example of this in an iOS context:
+</p><pre class="code-block">[<span class="hljs-built_in">UIApplication</span> sharedApplication];</pre>
+<p>The compiler will take this code and create the following pseudocode:
+</p><pre class="code-block"><span class="hljs-keyword">id</span> <span class="hljs-built_in">UIApplicationClass</span> = [<span class="hljs-built_in">UIApplication</span> <span class="hljs-keyword">class</span>];
+objc_msgSend(<span class="hljs-built_in">UIApplicationClass</span>, <span class="hljs-string">"sharedApplication"</span>);</pre>
+<p>The first parameter is a reference to the <code>UIApplication</code> class, followed by the <code>sharedApplication</code> selector. An easy way to tell if there are any parameters is to simply check for colons in the Objective-C selector. Each colon will represent a parameter in a Selector.
+</p>
+<p>Here’s another Objective-C example:
+</p><pre class="code-block"><span class="hljs-built_in">NSString</span> *helloWorldString = [<span class="hljs-string">@"Can't Sleep; "</span> stringByAppendingString:<span class="hljs-string">@"Clowns will eat me"</span>];</pre>
+<p>The compiler will create the following (shown below in pseudocode):
+</p><pre class="code-block"><span class="hljs-built_in">NSString</span> *helloWorldString; 
+helloWorldString = objc_msgSend(<span class="hljs-string">@"Can't Sleep; "</span>, <span class="hljs-string">"stringByAppendingString:"</span>, <span class="hljs-string">@"Clowns will eat me"</span>);</pre>
+<p>The first argument is an instance of an <code>NSString</code> (<code>@&quot;Can&apos;t Sleep; &quot;</code>), followed by the selector, followed by a parameter which is also an <code>NSString</code> instance.
+</p>
+<p>Using this knowledge of <code>objc_msgSend</code>, you can use the registers in x64 to help explore content, which you’ll do very shortly.
+</p>
+<h2 class="segment-chapter">Putting theory to practice</h2>
+
+<p>For this section, you’ll be using a project supplied in this chapter’s resource bundle called <em>Registers</em>.
+</p>
+<p>Open this project up through Xcode and give it a run.
+</p><div class="image-80"><img src="graphics/img33.png"  alt="" title="" /></div>
+<p>This is a rather simple application which merely displays the contents of some x64 registers. It’s important to note that this application can’t display the values of registers at any given moment; it can only display the values of registers during a specific function call. This means you won’t see too many changes to the values of these registers since they’ll likely have the same (or similar) value when the function to grab the register values is called.
+</p>
+<p>Now you’ve got an understanding of the functionality behind the Registers macOS application, create a symbolic breakpoint for <code>NSViewController</code>’s <code>viewDidLoad</code> method. Remember to use &quot;NS&quot; instead of &quot;UI&quot;, since you’re working on a Cocoa application.
+</p><div class="image-70"><img src="graphics/img34.png"  alt="" title="" /></div>
+<p>Build and rerun the application. Once the debugger has stopped, type the following into the LLDB console:
+</p><pre class="code-block">(lldb) register read</pre>
+<p>This will list all of the main registers at the paused state of execution. However, this is too much information. You should selectively print out registers and treat them as Objective-C objects instead.
+</p>
+<p>If you recall, <code>-[NSViewController viewDidLoad]</code> will be translated into the following assembly pseudocode:
+</p><pre class="code-block">RDI = <span class="hljs-built_in">UIViewControllerInstance</span> 
+RSI = <span class="hljs-string">"viewDidLoad"</span>
+objc_msgSend(RDI, RSI)</pre>
+<p>With the x64 calling convention in mind, and knowing how <code>objc_msgSend</code> works, you can find the specific <code>NSViewController</code> that is being loaded.
+</p>
+<p>Type the following into the LLDB console:
+</p><pre class="code-block">(lldb) po $rdi </pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block">&lt;Registers.ViewController: 0x6080000c13b0&gt;</pre>
+<p>This will dump out the <code>NSViewController</code> reference held in the <code>RDI</code> register, which as you now know, is the location of the first argument to the method.
+</p>
+<p>In LLDB, it’s important to prefix registers with the <code>$</code> character, so LLDB knows you want the value of a register and not a variable related to your scope in the source code. Yes, that’s different than the assembly you see in the disassembly view! Annoying, eh?
+</p>
+<div class="note">
+<p><em>Note</em>: The observant among you might notice whenever you stop on an Objective-C method, you’ll never see the <code>objc_msgSend</code> in the LLDB backtrace. This is because the <code>objc_msgSend</code> family of functions perfoms a <code><em>jmp</em></code>, or jump opcode command in assembly. This means that <code>objc_msgSend</code> acts as a trampoline function, and once the Objective-C code starts executing, all stack trace history of <code>objc_msgSend</code> will be gone. This is an optimization known as <em>tail call optimization</em>.
+</p></div>
+
+<p>Try printing out the <code>RSI</code> register, which will hopefully contain the selector that was called. Type the following into the LLDB console:
+</p><pre class="code-block">(lldb) po $rsi </pre>
+<p>Unfortunately, you’ll get garbage output that looks something like this:
+</p><pre class="code-block">140735181830794</pre>
+<p>Why is this? An Objective-C selector is basically just a <code>char *</code>. This means, like all C types, LLDB does not know how to format this data. As a result, you must explicitly cast this reference to the data type you want.
+</p>
+<p>Cast the <code>RSI</code> register to the correct type:
+</p><pre class="code-block">(lldb) po (char *)$rsi </pre>
+<p>You’ll now get the expected:
+</p><pre class="code-block">&quot;viewDidLoad&quot;</pre>
+<p>Of course, you can also cast the <code>RSI</code> register to the <code>Selector</code> type to produce the same result:
+</p><pre class="code-block">(lldb) po (SEL)$rsi</pre>
+<p>Now, it’s time to explore an Objective-C method with arguments. Since you’ve stopped on <code>viewDidLoad</code>, you can safely assume the <code>NSView</code> instance has loaded. A method of interest is the <code><em>mouseUp:</em></code> selector implemented by <code>NSView</code>’s parent class, <code>NSResponder</code>.
+</p>
+<p>In LLDB, create a breakpoint on <code>NSResponder</code>’s <code>mouseUp:</code> selector and resume execution. If you can’t remember how to do that, here are the commands you need:
+</p><pre class="code-block">(lldb) b -[NSResponder mouseUp:]
+(lldb) continue</pre>
+<p>Now, click on the application’s window. Make sure to click on the outside of the NSScrollView as it will gobble up your click and the <code>-[NSResponder mouseUp:]</code> breakpoint will not get hit.
+</p><div class="image-70"><img src="graphics/img35.png"  alt="" title="" /></div>
+<p>As soon as you let go of the mouse or the trackpad, LLDB will stop on the <code>mouseUp:</code> breakpoint. Print out the reference of the <code>NSResponder</code> by typing the following into the LLDB console:
+</p><pre class="code-block">(lldb) po $rdi </pre>
+<p>You’ll get something similar to the following:
+</p><pre class="code-block">&lt;NSView: 0x608000120140&gt;</pre>
+<p>However, there’s something interesting with the selector. There’s a colon in it, meaning there’s an argument to explore! Type the following into the LLDB console:
+</p><pre class="code-block">(lldb) po $rdx </pre>
+<p>You’ll get the description of the NSEvent:
+</p><pre class="code-block">NSEvent: type=LMouseUp loc=(351.672,137.914) time=175929.4 flags=0 win=0x6100001e0400 winNum=8622 ctxt=0x0 evNum=10956 click=1 buttonNumber=0 pressure=0 deviceID:0x300000014400000 subtype=NSEventSubtypeTouch</pre>
+<p>How can you tell it’s an <code>NSEvent</code>? Well, you can either look online for documentation on <code>-[NSResponder mouseUp:]</code> or, you can simply use Objective-C to get the type:
+</p><pre class="code-block">(lldb) po [$rdx class]</pre>
+<p>Pretty cool, eh?
+</p>
+<p>Sometimes it’s useful to use registers and breakpoints in order to get a reference to an object you know is alive in memory.
+</p>
+<p>For example, what if you wanted to change the front NSWindow to red, but you had no reference to this view in your code, and you didn’t want to recompile with any code changes? You can simply create a breakpoint you can easily trip, get the reference from the register and manipulate the instance of the object as you please. You’ll try changing the main window to red now.
+</p>
+<div class="note">
+<p><em>Note</em>: Even though <code>NSResponder</code> implements <code>mouseDown:</code>, <code>NSWindow</code> overrides this method since it’s a subclass of <code>NSResponder</code>. You can dump all classes that implement <code>mouseDown:</code> and figure out which of those classes inherit from <code>NSResponder</code> to determine if the method is overridden without having access to the source code. An example of dumping all the Objective-C classes that implement <code>mouseDown:</code> is <code>image lookup -rn \smouseDown:</code>, or using the <code>rlook</code> regex command you created in the previous chapter.
+</p></div>
+
+<p>First remove any previous breakpoints using the LLDB console:
+</p><pre class="code-block">(lldb) breakpoint delete
+About to delete all breakpoints, do you want to do that?: [Y/n] </pre>
+<p>Then type the following into the LLDB console:
+</p><pre class="code-block">(lldb) breakpoint set -o -S &quot;-[NSWindow mouseDown:]&quot;
+(lldb) continue</pre>
+<p>This sets a breakpoint which will fire only once — a one-shot breakpoint.
+</p>
+<p>Tap on the application. Immediately after tapping, the breakpoint should trip. Then type the following into the LLDB console:
+</p><pre class="code-block">(lldb) po [$rdi setBackgroundColor:[NSColor redColor]]
+(lldb) continue </pre>
+<p>Upon resuming, the <code>NSWindow</code> will change to red!
+</p><div class="image-60"><img src="graphics/img36.png"  alt="" title="" /></div>
+<h2 class="segment-chapter">Swift and registers</h2>
+
+<p>When exploring registers in Swift you’ll hit two hurdles that make assembly debugging harder than it is in Objective-C.
+</p>
+<ol>
+<li>
+<p>First, registers are <em>not</em> available in the Swift LLDB debugging context. This means you have to get whatever data you want and then use the Objective-C debugging context to print out the registers passed into the Swift function. Remember that you can use the <code>expression -l objc -O --</code> command, or alternatively use the <code>cpo</code> custom command you made in Chapter 8, “Persisting and Customizing Commands”. Fortunately, the <code>register read</code> command is available in the Swift context.
+</p></li>
+
+<li>
+<p>Second, Swift is not as dynamic as Objective-C. In fact, it’s sometimes best to assume that Swift is like C, except with a very, very cranky and bossy compiler. If you have a memory address, you need to explicitly cast it to the object you expect it to be; otherwise, the Swift debugging context has no clue how to interpret a memory address.
+</p></li>
+</ol>
+
+<p>That being said, the same register calling convention is used in Swift. However, there’s one <i>very</i> important difference. When Swift calls a function, it has no need to use <code>objc_msgSend</code>, unless of course you mark up a method to use <code><em>dynamic</em></code>. This means when Swift calls a function, the previously used RSI register assigned to the selector will actually contain the function’s second parameter.
+</p>
+<p>Enough theory — time to see this in action.
+</p>
+<p>In the Registers project, navigate to <em>ViewController.swift</em> and add the following function to the class:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">executeLotsOfArguments</span><span class="hljs-params">(one: Int, two: Int, three: Int,
+                            four: Int, five: Int, six: Int,
+                            seven: Int, eight: Int, nine: Int,
+                            ten: Int)</span></span> {
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">"arguments are: <span class="hljs-subst">\(one)</span>, <span class="hljs-subst">\(two)</span>, <span class="hljs-subst">\(three)</span>,
+          <span class="hljs-subst">\(four)</span>, <span class="hljs-subst">\(five)</span>, <span class="hljs-subst">\(six)</span>, <span class="hljs-subst">\(seven)</span>,
+          <span class="hljs-subst">\(eight)</span>, <span class="hljs-subst">\(nine)</span>, <span class="hljs-subst">\(ten)</span>"</span>)
+}</pre>
+<p>Now, in <code>viewDidLoad</code>, call this function with the appropriate arguments:
+</p><pre class="code-block"><span class="hljs-keyword">override</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">viewDidLoad</span><span class="hljs-params">()</span></span> {
+  <span class="hljs-keyword">super</span>.viewDidLoad()
+  <span class="hljs-keyword">self</span>.executeLotsOfArguments(one: <span class="hljs-number">1</span>, two: <span class="hljs-number">2</span>, three: <span class="hljs-number">3</span>, four: <span class="hljs-number">4</span>,
+                              five: <span class="hljs-number">5</span>, six: <span class="hljs-number">6</span>, seven: <span class="hljs-number">7</span>,
+                              eight: <span class="hljs-number">8</span>, nine: <span class="hljs-number">9</span>, ten: <span class="hljs-number">10</span>)
+}</pre>
+<p>Put a breakpoint on the very same line as of the declaration of <code>executeLotsOfArguments</code> so the debugger will stop at the very beginning of the function. This is important, or else the registers might get clobbered if the function is actually executing.
+</p>
+<p>Then remove the symbolic breakpoint you set on <code>-[NSViewController viewDidLoad]</code>.
+</p>
+<p>Build and run the app, then wait for the <code>executeLotsOfArguments</code> breakpoint to stop execution.
+</p>
+<p>Again, a good way to start investigating is to dump the registers. In LLDB, type the following:
+</p><pre class="code-block">(lldb) register read -f d </pre>
+<p>This will dump the registers and display the format in decimal by using the <code>-f d</code> option. The output will look similar to this:
+</p><pre class="code-block">General Purpose Registers:
+rax = 10
+rbx = 7
+rcx = 4
+rdx = 3
+rdi = 1
+rsi = 2
+rbp = 140732920750864
+rsp = 140732920750144
+r8 = 5
+r9 = 6
+r10 = 9
+r11 = 8
+r12 = 4315985456
+r13 = 106102873003904
+r14 = 88
+r15 = 4315985456
+rip = 4294982268  Registers`Registers.ViewController.executeLotsOfArguments(one: Swift.Int, two: Swift.Int, three: Swift.Int, four: Swift.Int, five: Swift.Int, six: Swift.Int, seven: Swift.Int, eight: Swift.Int, nine: Swift.Int, ten: Swift.Int) -&gt; () + 76 at ViewController.swift:45
+rflags = 514
+cs = 43
+fs = 0
+gs = 00</pre>
+<p>As you can see, the registers follow the x64 calling convention. <code>RDI</code>, <code>RSI</code>, <code>RDX</code>, <code>RCX</code>, <code>R8</code> and <code>R9</code> hold your first six parameters.
+</p>
+<div class="note">
+<p><em>Note</em>: Something I&apos;ve refrained from telling you about LLDB until now is that LLDB has several convenience variables to reference assembly registers that come in the form of <em>$</em><em>arg{X}</em>, where X is the parameter number. So, remember how <code>RDI</code> is the first parameter, while <code>RSI</code> is the second? In LLDB, you can reference the first parameter (<code>RDI</code>) via <em>$</em><em>arg1</em>. Going along with the example, you can reference the second parameter (<code>RSI</code>) with <em>$</em><em>arg2</em> and so on. These convenience values can also be used in the ARM64 calling convention <i>even though ARM64 uses different registers</i>. You <i>should</i> memorize the register calling convention so this book minimizes the use of these register helper variables.
+</p></div>
+
+<p>You may also notice other parameters are stored in some of the other registers. While this is true, it’s simply a leftover from the code that sets up the stack for the remaining parameters. Remember, parameters after the sixth argument go on the stack.
+</p>
+<h2 class="segment-chapter">RAX, the return register</h2>
+
+<p>But wait — there’s more! So far, you’ve learned how six registers are called in a function, but what about return values?
+</p>
+<p>Fortunately, there is only one designated register for return values from functions: <code><em>RAX</em></code>. Go back to <code>executeLotsOfArguments</code> and modify the function to return a <code>String</code>, like so:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">executeLotsOfArguments</span><span class="hljs-params">(one: Int, two: Int, three: Int,
+                            four: Int, five: Int, six: Int,
+                            seven: Int, eight: Int, nine: Int,
+                            ten: Int)</span></span> -&gt; <span class="hljs-type">String</span> {
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">"arguments are: <span class="hljs-subst">\(one)</span>, <span class="hljs-subst">\(two)</span>, <span class="hljs-subst">\(three)</span>, <span class="hljs-subst">\(four)</span>,
+          <span class="hljs-subst">\(five)</span>, <span class="hljs-subst">\(six)</span>, <span class="hljs-subst">\(seven)</span>, <span class="hljs-subst">\(eight)</span>, <span class="hljs-subst">\(nine)</span>, <span class="hljs-subst">\(ten)</span>"</span>)
+    <span class="hljs-keyword">return</span> <span class="hljs-string">"Mom, what happened to the cat?"</span>
+}</pre>
+<p>In <code>viewDidLoad</code>, modify the function call to receive and ignore the String value.
+</p><pre class="code-block"><span class="hljs-keyword">override</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">viewDidLoad</span><span class="hljs-params">()</span></span> {
+    <span class="hljs-keyword">super</span>.viewDidLoad()
+    <span class="hljs-keyword">let</span> <span class="hljs-number">_</span> = <span class="hljs-keyword">self</span>.executeLotsOfArguments(one: <span class="hljs-number">1</span>, two: <span class="hljs-number">2</span>,
+          three: <span class="hljs-number">3</span>, four: <span class="hljs-number">4</span>, five: <span class="hljs-number">5</span>, six: <span class="hljs-number">6</span>, seven: <span class="hljs-number">7</span>,
+          eight: <span class="hljs-number">8</span>, nine: <span class="hljs-number">9</span>, ten: <span class="hljs-number">10</span>)
+}</pre>
+<p>Create a breakpoint somewhere in <code>executeLotsOfArguments</code>. Build and run again, and wait for execution to stop in the function. Next, type the following into the LLDB console:
+</p><pre class="code-block">(lldb) finish</pre>
+<p>This will finish executing the current function and pause the debugger again. At this point, the return value from the function should be in <code>RAX</code>. Type the following into LLDB:
+</p><pre class="code-block">(lldb) register read rax </pre>
+<p>You’ll get something similar to the following:
+</p><pre class="code-block">rax = 0x0000000100003760  &quot;Mom, what happened to the cat?&quot;</pre>
+<p>Boom! Your return value!
+</p>
+<p>Knowledge of the return value in <code>RAX</code> is extremely important as it will form the foundation of debugging scripts you’ll write in later sections.
+</p>
+<h2 class="segment-chapter">Changing around values in registers</h2>
+
+<p>In order to solidify your understanding of registers, you’ll modify registers in an already-compiled application.
+</p>
+<p>Close Xcode and the Registers project. Open a Terminal window and launch the iPhone X Simulator. Do this by typing the following:
+</p><pre class="code-block">xcrun simctl list | grep &quot;iPhone X&quot;</pre>
+<p>This command lists all the devices but searches for only devices containing the phrase &quot;iPhone X&quot; in it (for iPhone X). It will look something like this:
+</p><pre class="code-block">    iPhone X (A68E22C0-8286-4E60-BF62-92559E15A622) (Shutting Down)</pre>
+<p>The UUID is what you’re after. Use that to open the iOS Simulator by typing the following, replacing your UUID as appropriate:
+</p><pre class="code-block">open /Applications/Xcode.app/Contents/Developer/Applications/Simulator.app --args -CurrentDeviceUDID A68E22C0-8286-4E60-BF62-92559E15A622</pre>
+<p>Make sure the simulator is launched and is sitting on the home screen. You can get to the home screen by pressing <em>Command + Shift + H</em>. Once your Simulator is set up, head over to the Terminal window and attach LLDB to the SpringBoard application:
+</p><pre class="code-block">lldb -n SpringBoard</pre>
+<p>This attaches LLDB to the SpringBoard instance running on the iOS Simulator! SpringBoard is the program that controls the home screen on iOS.
+</p>
+<p>Once attached, type the following into LLDB:
+</p><pre class="code-block">(lldb) p/x @&quot;Yay! Debugging&quot;</pre>
+<p>You should get some output similar to the following:
+</p><pre class="code-block">(__NSCFString *) $3 = 0x0000618000644080 @&quot;Yay! Debugging&quot;</pre>
+<p>Take a note of the memory reference of this newly created <code>NSString</code> instance as you’ll use it soon. Now, create a breakpoint on <code>UILabel</code>’s <code>setText:</code> method in LLDB:
+</p><pre class="code-block">(lldb) b -[UILabel setText:]</pre>
+<p>Next, type the following in LLDB:
+</p><pre class="code-block">(lldb) breakpoint command add </pre>
+<p>LLDB will spew some output and go into multi-line edit mode. This command lets you add extra commands to execute when the breakpoint you just added is hit. Type the following, replacing the memory address with the address of your <code>NSString</code> from above:
+</p><pre class="code-block">&gt; po $rdx = 0x0000618000644080
+&gt; continue
+&gt; DONE</pre>
+<p>Take a step back and review what you’ve just done. You’ve created a breakpoint on <code>UILabel</code>’s <code>setText:</code> method. Whenever this method gets hit, you’re replacing what’s in <code>RDX</code> — the third parameter — with a different <code>NSString</code> instance that says <em>Yay</em><em>!</em><em> Debugging</em>.
+</p>
+<p>Resume the debugger by using the <code><em>continue</em></code> command:
+</p><pre class="code-block">(lldb) continue</pre>
+<p>Try exploring the SpringBoard Simulator app and see what content has changed. Swipe up from the bottom to bring up the switcher view for all the apps, and observe the changes:
+</p><div class="image-35"><img src="graphics/img37.png"  alt="" title="" /></div>
+<p>Try exploring other areas where modal presentations can occur, as this will likely result in a new <code>UIViewController</code> (and all of its subviews) being lazily loaded, causing the breakpoint action to be hit.
+</p><div class="image-25"><img src="graphics/img38.png"  alt="" title="" /></div>
+<p>Although this might seem like a cool gimmicky programming trick, it provides an insightful look into how a limited knowledge of registers and assembly can produce big changes in applications you don’t have the source for.
+</p>
+<p>This is also useful from a debugging standpoint, as you can quickly visually verify where the <code>-[UILabel setText:]</code> is executed within the SpringBoard application and run breakpoint conditions to find the exact line of code that sets a particular <code>UILabel</code>’s text.
+</p>
+<h2 class="segment-chapter">Registers and SDK</h2>
+
+<p>Knowing how registers work along with how an application functions can quickly help you hunt down items of interest.
+</p>
+<p>Here&apos;s an example that I frequently use in my day to day iOS development: Oftentimes, I&apos;ll come across a <code>UIButton</code> and want to know the <code>IBAction</code> and receiver of what happens when I tap on said button.
+</p>
+<p>I could make some crazy, over the top breakpoint... Knowing myself, I usually have <code>IBActions</code> in a <code>UIView</code> or <code>UIViewController</code> (maybe <code>UITableViewCell</code>?) and usually have some sort of method whose name includes the word, &quot;tapped.&quot;
+</p>
+<p>So maybe the following LLDB command would work?
+</p><pre class="code-block">(lldb) rb View(Controller|Cell)?\s(?i).*tapped</pre>
+<p>But I am falsely assuming that coworkers/other devs are using the same naming convention as me; this idea will not work.
+</p>
+<p>Instead, I know that whenever an <code>IBAction</code> method is executed, it must go through the <code>UIApplication</code> singleton, where it will find the proper reciever by traversing the responder chain. To do this, <code>UIControl</code>&apos;s <em>-</em><em>sendAction:to:forEvent:</em> method gets called.
+</p>
+<p>I can put a breakpoint on this method and explore the <em>sendAction:</em> and <em>to:</em> parameters to find what code the <code>IBAction</code> is executing.
+</p>
+<p>This idea can be applied to apps you do and don&apos;t have the source code for. I often find it faster to use this method even in apps I do have source code for, then to scrape through the (seemingly) thousands of <code>IBActions</code> in an application.
+</p>
+<p>...But just for show, let&apos;s apply this to the iOS Maps application. I am curious about the name and receiver of the upper right button that focuses the Maps application on the user&apos;s coordinate location.
+</p><div class="image-25"><img src="graphics/img39.png"  alt="" title="" /></div>
+<p>After attaching to the Maps application via LLDB and setting a breakpoint for <code>-[UIControl sendAction:to:forEvent:]</code>, it&apos;s quite easy to find the name and receiver of what the <code>UIButton</code> does.
+</p>
+<p>The <em>sendAction:</em> argument (<code>RDX</code>) will take a <code>Selector</code>, while the <em>to:</em> argument will be the receiver (<code>RCX</code>) for the IBAction.
+</p><div class="image-95"><img src="graphics/img40.png"  alt="" title="" /></div>
+<p>Finding code with register knowledge and a tap of a <code>UIButton</code>, how cool is that?
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>Whew! That was a long one, wasn’t it? Sit back and take a break with your favorite form of liquid; you’ve earned it.
+</p>
+<p>So what did you learn?
+</p>
+<ul>
+<li>
+<p>Architectures define a calling convention which dictates where parameters to a function and its return value are stored.
+</p></li>
+</ul>
+
+<ul>
+<li>
+<p>In Objective-C, the <code>RDI</code> register is the reference of the calling <code>NSObject</code>, <code>RSI</code> is the Selector, <code>RDX</code> is the first parameter and so on.
+</p></li>
+
+<li>
+<p>In Swift, <code>RDI</code> is the first argument, <code>RSI</code> is the second parameter, and so on provided that the Swift method isn’t using dynamic dispatch.
+</p></li>
+
+<li>
+<p>The <code>RAX</code> register is used for return values in functions regardless of whether you’re working with Objective-C, or Swift.
+</p></li>
+
+<li>
+<p>Make sure you use the Objective-C context when printing registers with <code>$</code>.
+</p></li>
+</ul>
+
+<p>There’s a lot you can do with registers. Try exploring apps you don’t have the source code for; it’s a lot of fun and will build a good foundation for tackling tough debugging problems.
+</p>
+<p>Try attaching to an application on the iOS Simulator and map out the <code>UIViewController</code>s as they appear using assembly, a smart breakpoint, and a breakpoint command.
+</p></body></html>

@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 8: Persisting &amp; Customizing Commands</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 8: Persisting and Customizing Commands</h1>
+
+<p>As you&apos;ve probably noticed in your development career, typing the same thing over and over really sucks. If you use a particular command that&apos;s difficult to type, there’s no reason you should have to type the whole thing out. Just as you’ve learned when creating breakpoints using regular expressions, you’d go crazy typing out the full names of some of those Swift functions.
+</p>
+<p>The same idea can be applied to any commands, settings, or code executed in LLDB. However, there&apos;s two problems that haven’t been addressed until now: persisting your commands and creating shortcuts for them! Every time you run a new LLDB session, all your previous commands you’ve executed will vanish!
+</p>
+<p>In this chapter, you’ll learn how to persist these choices through the <code>.lldbinit</code> file. By persisting your choices and making convenience commands for yourself, your debugging sessions will run much more smoothly and efficiently. This is also an important concept because from here on out, you’ll use the <code>.lldbinit</code> file on a regular basis.
+</p>
+<h2 class="segment-chapter">Persisting... how?</h2>
+
+<p>Whenever LLDB is invoked, it searches several directories for special initialization files. If found, these files will be loaded into LLDB as soon as LLDB starts up but before LLDB has attached to the process (important to know if you’re trying to execute arbitrary code in the init file). You can use these files to specify settings or create custom commands to do your debugging bidding.
+</p>
+<p>LLDB searches for an initialization file in the following places:
+</p>
+<ol>
+<li>
+<p><em>~/.lldbinit-</em><em>[</em><em>context</em><em>]</em> where <code>[context]</code> is <em>Xcode</em>, if you are debugging with Xcode, or <em>lldb</em> if you are using the command line incarnation of LLDB. For example, if you wanted commands that were only available in LLDB while debugging in the Terminal, you’d add content to <code>~/.lldbinit-lldb</code>, while if you wanted to have commands only available to Xcode you’d use <code>~/.lldbinit-Xcode</code>.
+</p></li>
+
+<li>
+<p>Next, LLDB searches for content found in <em>~/.lldbinit</em>. This is the ideal file for most of your logic, since you want to use commands in both Xcode and terminal sessions of LLDB.
+</p></li>
+
+<li>
+<p>Finally, LLDB will search the directory where it was invoked. Unfortunately, when Xcode launches LLDB, it’ll launch LLDB at the <code>/</code> root directory. This isn’t an ideal place to stick an <code>.lldbinit</code> file, so this particular implementation will be ignored throughout the book.
+</p></li>
+</ol>
+
+<h2 class="segment-chapter">Creating the .lldbinit file</h2>
+
+<p>In this section you’re going to create your first <code>.lldbinit</code> file.
+</p>
+<p>First, open a Terminal window and type the following:
+</p><pre class="code-block">nano ~/.lldbinit</pre>
+<p>This uses the <code>nano</code> text editor to open up your <code>.lldbinit</code> file. If you already have an existing file in the location, <code>nano</code> will open up the file instead of creating a new one.
+</p>
+<div class="note">
+<p><em>Note</em>: You really should be using some form of <em>vi</em> or <em>emacs</em> for editing .lldbinit, and then angrily blog about how unconventional the other editor is. I’m suggesting <code>nano</code> to stay out of the great debate.
+</p></div>
+
+<p>Once the file is open in the <code>nano</code> editor, add the following line of code to the end of your <code>.lldbinit</code> file:
+</p><pre class="code-block">command alias -- Yay_Autolayout expression -l objc -O -- [[[[[UIApplication sharedApplication] keyWindow] rootViewController] view] recursiveDescription]</pre>
+<p>You’ve just created an <em>alias</em> —  a shortcut command for a longer expression. The alias’s name is called <code>Yay_Autolayout</code> and it’ll execute an expression command to get the root UIView (iOS only) and dump the position and layout of the root view and all of it’s subviews.
+</p>
+<p>Save your work by pressing <em>Ctrl + O</em>, but don’t exit <code>nano</code> just yet.
+</p>
+<p>Open the Signals Xcode project  — you know, the one you’ve been playing with throughout this section. Build and run the Signals application. Once running, pause execution and type the alias in the debugger:
+</p><pre class="code-block">(lldb) Yay_Autolayout</pre>
+<p>This will dump out all the views in the applications! Neat!
+</p>
+<div class="note">
+<p><em>Note</em>: The cool thing about this command is it’ll work equally well for apps you do — and don’t — have source code for. You could, hypothetically, attach LLDB to the Simulator’s SpringBoard and dump all the views using the exact same method.
+</p></div>
+
+<p>Now, use LLDB to get help for this new command:
+</p><pre class="code-block">(lldb) help Yay_Autolayout</pre>
+<p>The output will look kinda meh. You can do better. Go back to the <code>nano</code> Terminal window and rewrite the command alias to include some helpful information, like so:
+</p><pre class="code-block">command alias -H &quot;Yay_Autolayout will get the root view and recursively dump all the subviews and their frames&quot; -h &quot;Recursively dump views&quot; -- Yay_Autolayout expression -l objc -O -- [[[[[UIApplication sharedApplication] keyWindow] rootViewController] view] recursiveDescription]</pre>
+<p>Make sure <code>nano</code> saves the file by pressing <em>Ctrl + O</em>. Next, build and run the Signals project.
+</p>
+<p>Now when you stop the debugger and type <code>help Yay_Autolayout</code>, you’ll get help text at the bottom of the output. This is done with the <code>-H</code> command. You can also get a brief summary by just typing <code>help</code>, which gives the <code>-h</code> description along with the rest of the commands.
+</p>
+<p>This may seem a bit pointless now, but when you have many, many custom commands in your <code>.lldbinit</code> file, you’ll be thankful you provided documentation for yourself.
+</p>
+<h2 class="segment-chapter">Command aliases with arguments</h2>
+
+<p>You’ve just created a standalone command alias that doesn’t require any arguments. However, you’ll often want to create aliases to which you can supply input.
+</p>
+<p>Go back to the <code>nano</code> window in Terminal. Add the following at the bottom of the file:
+</p><pre class="code-block">command alias cpo expression -l objc -O --</pre>
+<p>You’ve just created a new command called <em>cpo</em>. The <code>cpo</code> command will do a normal <code>po</code> (print object), but it’ll use the Objective-C context instead. This is an ideal command to use when you’re in a Swift context, but want to use Objective-C to print out an address or register of something you know is a valid Objective-C object.
+</p>
+<p>Save your work in nano, and jump over to the Signals project. Navigate to <em>MasterViewController</em>’s <code>viewDidLoad</code> and set a breakpoint at the top of the function. Build and run the application.
+</p><div class="image-80"><img src="graphics/img28.png"  alt="" title="" /></div>
+<p>To best understand the importance of the <code>cpo</code> command, first get the reference to the MasterViewController.
+</p><pre class="code-block">(lldb) po self</pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block">&lt;Signals.MasterViewController: 0x7fc8295071a0&gt;</pre>
+<p>Take the memory address you get at the end of the output (as usual, yours will likely be different), and try printing that in the debugger.
+</p><pre class="code-block">(lldb) po 0x7fc8295071a0</pre>
+<p>This will not produce any meaningful output, since you’ve stopped in a Swift file, and Swift is a type-safe language. Simply printing an address in Swift will not do anything. This is why the Objective-C context is so useful when debugging, especially when working in assembly where there are only references to memory addresses.
+</p>
+<p>Now, use the new command you’ve just created on the address:
+</p><pre class="code-block">(lldb) cpo 0x7fc8295071a0</pre>
+<p>You’ll see the same output as you did with <code>po self</code>:
+</p><pre class="code-block">&lt;Signals.MasterViewController: 0x7fc8295071a0&gt;</pre>
+<p>This is a helpful command to get a NSObject&apos;s description, whether it&apos;s created with Objective-C or Swift.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>You’ve learned how to create aliases for simple commands as well as persist them in the <code>.lldbinit</code> file. This will work across both Xcode and Terminal invocations of LLDB.
+</p>
+<p>As an exercise, add help messages to your newly created <code>cpo</code> command in the <code>~/.lldbinit</code> file so you’ll be able to remember how to use it when you have an onslaught of custom commands. Remember the <code>-h</code> option is the short help message that&apos;s displayed when you just type <code>help</code>, while the <code>-H</code> option is the longer help command used when you type <code>help command</code>. Remember to use the <code>--</code> to separate your help input arguments to the rest of your command.
+</p>
+<p>In addition, write a command alias for something you often use. Put this alias in your <code>~/.lldbinit</code> file and try it out!
+</p></body></html>

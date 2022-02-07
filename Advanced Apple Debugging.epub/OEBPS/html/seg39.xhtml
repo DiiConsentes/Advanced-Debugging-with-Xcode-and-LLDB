@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Appendix A: LLDB Cheatsheet</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Appendix A: LLDB Cheatsheet</h1>
+
+<p>A cheatsheet for commands and ideas on how to use LLDB.
+</p>
+<h2 class="segment-chapter">Getting help</h2>
+<pre class="code-block">(lldb) help</pre>
+<p>List all commands and aliases.
+</p><pre class="code-block">(lldb) help po</pre>
+<p>Get help documentation for <code>po</code> (<code>expression</code>) command.
+</p><pre class="code-block">(lldb) help break set</pre>
+<p>Get help documentation for <code>breakpoint set</code>.
+</p><pre class="code-block">(lldb) apropos step-in</pre>
+<p>Search through help documentation containing <code>step-in</code>.
+</p>
+<h2 class="segment-chapter">Finding code</h2>
+<pre class="code-block">(lldb) image lookup -rn UIAlertController</pre>
+<p>Look up all code containing <code>UIAlertController</code> that&apos;s compiled or loaded into an executable.
+</p><pre class="code-block">(lldb) image lookup -rn (?i)hosturl</pre>
+<p>Case insensitive search for any code that contains <code>&quot;hosturl&quot;</code>.
+</p><pre class="code-block">(lldb) image lookup -rn &apos;UIViewController\ set\w+:\]&apos;</pre>
+<p>Look up all setter property methods <code>UIViewController</code> implements or overrides.
+</p><pre class="code-block">(lldb) image lookup -rn . Security</pre>
+<p>Look up all code located within the <code>Security</code> module.
+</p><pre class="code-block">(lldb) image lookup -a 0x10518a720</pre>
+<p>Look up code based upon address <code>0x10518a720</code>.
+</p><pre class="code-block">(lldb) image lookup -s mmap</pre>
+<p>Look up code for the symbol named <code>mmap</code>.
+</p>
+<h2 class="segment-chapter">Breakpoints</h2>
+<pre class="code-block">(lldb) b viewDidLoad</pre>
+<p>Creates a breakpoint on all methods named <code>viewDidLoad</code> for both Swift and Objective-C.
+</p><pre class="code-block">(lldb) b setAlpha:</pre>
+<p>Creates a breakpoint on either the <code>setAlpha:</code> Objective-C method or the setter of the Objective-C <code>alpha</code> property.
+</p><pre class="code-block">(lldb) b -[CustomViewControllerSubclass viewDidLoad]</pre>
+<p>Creates a breakpoint on the Objective-C method <code>[CustomViewControllerSubclass viewDidLoad]</code>.
+</p><pre class="code-block">(lldb) rbreak CustomViewControllerSubclass.viewDidLoad</pre>
+<p>Creates a regex breakpoint to match either an Objective-C or Swift class <code>CustomViewControllerSubclass</code> which contains <code>viewDidLoad</code>. Could be Objective-C <code>-[CustomViewControllerSubclass viewDidLoad]</code> or could be Swift <code>ModuleName.CustomViewControllerSubclass.viewDidLoad () -&gt; ()</code>.
+</p><pre class="code-block">(lldb) breakpoint delete</pre>
+<p>Deletes all breakpoints.
+</p><pre class="code-block">(lldb) breakpoint delete 2</pre>
+<p>Deletes breakpoint ID 2.
+</p><pre class="code-block">(lldb) breakpoint list</pre>
+<p>List all breakpoints and their IDs.
+</p><pre class="code-block">(lldb) rbreak viewDid</pre>
+<p>Creates a regex breakpoint on <code>.*viewDid.*</code>.
+</p><pre class="code-block">(lldb) rbreak viewDid -s SwiftRadio</pre>
+<p>Creates a breakpoint on <code>.*viewDid.*</code>, but restricts the breakpoint(s) to the <code>SwiftRadio</code> module.
+</p><pre class="code-block">(lldb) rbreak viewDid(Appear|Disappear) -s SwiftHN</pre>
+<p>Creates a breakpoint on <code>viewDidAppear</code> or <code>viewDidDisappear</code> inside the <code>SwiftHN</code> module.
+</p><pre class="code-block">(lldb) rb &quot;\-\[UIViewController\ set&quot; -s UIKit</pre>
+<p>Creates a breakpoint on any Objective-C style breakpoints containing <code>-[UIViewController set</code> within the UIKit module.
+</p><pre class="code-block">(lldb) rb . -s SwiftHN -o </pre>
+<p>Create a breakpoint on every function in the <code>SwiftHN</code> module, but remove all breakpoints once the breakpoint is hit.
+</p><pre class="code-block">(lldb) rb . -f ViewController.m</pre>
+<p>Create a breakpoint on every function found in <code>ViewController.m</code>.
+</p>
+<h2 class="segment-chapter">Expressions</h2>
+<pre class="code-block">(lldb) po &quot;hello, debugger&quot;</pre>
+<p>Prints <code>&quot;hello, debugger&quot;</code> regardless of the debugging context.
+</p><pre class="code-block">(lldb) expression -lobjc -O -- [UIApplication sharedApplication]</pre>
+<p>Print the shared <code>UIApplication</code> instance in an Objective-C context.
+</p><pre class="code-block">(lldb) expression -lswift -O -- UIApplication.shared</pre>
+<p>Print the shared <code>UIApplication</code> instance in a Swift context.
+</p><pre class="code-block">(lldb) b getenv
+(lldb) expression -i0 -- getenv(&quot;HOME&quot;)</pre>
+<p>Creates a breakpoint on <code>getenv</code>, executes the <code>getenv</code> function, and stops at the beginning of the <code>getenv</code> function.
+</p><pre class="code-block">(lldb) expression -u0 -O -- [UIApplication test]</pre>
+<p>Don&apos;t let LLDB unwind the stack if you’re executing a method that will cause the program to crash.
+</p><pre class="code-block">(lldb) expression -p -- NSString *globalString = [NSString stringWithUTF8String: &quot;Hello, Debugger&quot;]; 
+(lldb) po globalString
+Hello, Debugger</pre>
+<p>Declares a global <code>NSString*</code> called <code>globalString</code>.
+</p><pre class="code-block">(lldb) expression -g -O -lobjc -- [NSObject new] </pre>
+<p>Debug the debugger that&apos;s parsing the <code>[NSObject new]</code> Objective-C expression.
+</p>
+<h2 class="segment-chapter">Stepping</h2>
+<pre class="code-block">(lldb) thread return false</pre>
+<p>Return early from code with <code>false</code>.
+</p><pre class="code-block">(lldb) thread step-in
+(lldb) s</pre>
+<p>Step in.
+</p><pre class="code-block">(lldb) thread step-over
+(lldb) n</pre>
+<p>Step over.
+</p><pre class="code-block">(lldb) thread step-out
+(lldb) finish</pre>
+<p>Step out of a function.
+</p><pre class="code-block">(lldb) thread step-inst
+(lldb) ni</pre>
+<p>Step in if about to execute a function. Step an assembly instruction otherwise.
+</p>
+<h2 class="segment-chapter">GDB formatting</h2>
+<pre class="code-block">(lldb) p/x 128</pre>
+<p>Print value in hexadecimal.
+</p><pre class="code-block">(lldb) p/d 128</pre>
+<p>Print value in decimal.
+</p><pre class="code-block">(lldb) p/t 128</pre>
+<p>Print value in binary.
+</p><pre class="code-block">(lldb) p/a 128</pre>
+<p>Print value as address.
+</p><pre class="code-block">(lldb) x/gx 0x000000010fff6c40</pre>
+<p>Get the value pointed at by <code>0x000000010fff6c40</code> and display in 8 bytes.
+</p><pre class="code-block">(lldb) x/wx 0x000000010fff6c40</pre>
+<p>Get the value pointed at by <code>0x000000010fff6c40</code> and display in 4 bytes.
+</p>
+<h2 class="segment-chapter">Memory</h2>
+<pre class="code-block">(lldb) memory read 0x000000010fff6c40</pre>
+<p>Read memory at address <code>0x000000010fff6c40</code>.
+</p><pre class="code-block">(lldb) po id $d = [NSData dataWithContentsOfFile:@&quot;...&quot;]
+(lldb) mem read `(uintptr_t)[$d bytes]` `(uintptr_t)[$d bytes] + (uintptr_t)[$d length]` -r -b -o /tmp/file</pre>
+<p>Grab an instance of a remote file and write it to <code>/tmp/file</code> on your computer.
+</p>
+<h2 class="segment-chapter">Registers &amp; assembly</h2>
+<pre class="code-block">(lldb) register read -a</pre>
+<p>Display all registers on the system.
+</p><pre class="code-block">(lldb) register read rdi rsi</pre>
+<p>Read the <code>RSI</code> and the <code>RDI</code> register in x64 assembly.
+</p><pre class="code-block">(lldb) register write rsi 0x0</pre>
+<p>Set the <code>RSI</code> register to 0x0 in x64 assembly.
+</p><pre class="code-block">(lldb) register write rflags `$rflags ^ 64`</pre>
+<p>Toggle the zero flag in x64 assembly (augment if condition logic).
+</p><pre class="code-block">(lldb) register write rflags `$rflags | 64`</pre>
+<p>Set the zero flag (set to 1) in x64 assembly (augment if condition logic).
+</p><pre class="code-block">(lldb) register write rflags `$rflags &amp; ~64`</pre>
+<p>Clear the zero flag (set to 0) in x64 assembly (augment if condition logic).
+</p><pre class="code-block">(lldb) register write pc `$pc+4`</pre>
+<p>Increments the program counter by 4.
+</p><pre class="code-block">(lldb) disassemble</pre>
+<p>Display assembly for function in which you’re currently stopped.
+</p><pre class="code-block">(lldb) disassemble -p</pre>
+<p>Disassemble around current location; useful if in the middle of a function.
+</p><pre class="code-block">(lldb) disassemble -b</pre>
+<p>Disassemble function while showing opcodes; useful for learning what is responsible for what.
+</p><pre class="code-block">(lldb) disassemble -n &apos;-[UIViewController setTitle:]&apos;</pre>
+<p>Disassemble the Objective-C <code>-[UIViewController setTitle:]</code> method.
+</p><pre class="code-block">(lldb) disassemble -a 0x000000010b8d972d</pre>
+<p>Disassemble the function that contains the address 0x000000010b8d972d.
+</p>
+<h2 class="segment-chapter">Modules</h2>
+<pre class="code-block">(lldb) image list </pre>
+<p>List all modules loaded into the executable&apos;s process space.
+</p><pre class="code-block">(lldb) image list -b</pre>
+<p>Get the names of all the modules loaded into the executable&apos;s process space.
+</p><pre class="code-block">(lldb) process load /Path/To/Module.framework/Module</pre>
+<p>Load the module located at path into the executable&apos;s process space.
+</p></body></html>

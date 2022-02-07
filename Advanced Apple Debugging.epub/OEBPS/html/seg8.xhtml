@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 1: Getting Started</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Getting started</h1>
+
+<p>In this chapter, you’re going to get acquainted with LLDB and investigate the process of introspecting and debugging a program. You’ll start off by introspecting a program you didn’t even write — Xcode!
+</p>
+<p>You’ll take a whirlwind tour of a debugging session using LLDB and discover the amazing changes you can make to a program you’ve absolutely zero source code for. This first chapter heavily favors doing over learning, so a lot of the concepts and deep dives into certain LLDB functionality will be saved for later chapters.
+</p>
+<p>Let’s get started.
+</p>
+<h2 class="segment-chapter">Getting around Rootless</h2>
+
+<p>Before you can start working with LLDB, you need to learn about a feature introduced by Apple to thwart malware. Unfortunately, this feature will <i>also</i> thwart your attempts to introspect and debug using LLDB and other tools like DTrace. Never fear though, because Apple included a way to turn this feature off — for those who know what they’re doing. And you’re going to become one of these people who knows what they’re doing!
+</p>
+<p>The feature blocking your introspection and debugging attempts is <em>System Integrity Protection</em>, also known as <em>Rootless</em>. This system restricts what programs can do — even if they have root access — to stop malware from planting itself deep inside your system.
+</p>
+<p>Although Rootless is a substantial leap forward in security, it introduces some annoyances as it makes programs harder to debug. Specifically, it prevents other processes from attaching a debugger to programs Apple signs.
+</p>
+<p>Since this book involves debugging not only your own applications, but any application you’re curious about, it’s important that you to remove this feature while you learn about debugging so you can inspect any application of your choosing.
+</p>
+<p>If you currently have Rootless enabled, you’ll be unable to attach to the majority of Apple’s programs. There are exceptions however, such as any apps shipped on the iOS Simulator.
+</p>
+<p>For example, try attaching LLDB to the <code>Finder</code> application.
+</p>
+<p>Open up a Terminal window and look for the Finder process, like so:
+</p><pre class="code-block">lldb -n <span class="hljs-type">Finder</span></pre>
+<p>You’ll notice the following error:
+</p><pre class="code-block">error: attach failed: cannot attach to process due to System Integrity Protection</pre>
+<div class="note">
+<p><em>Note</em>: There are many ways to attach to a process, as well as specific configurations when LLDB attaches successfully. To learn more about attaching to a process, check out Chapter 3, “Attaching with LLDB”.
+</p></div>
+
+<h3 class="segment-chapter">Disabling Rootless</h3>
+
+<p>To disable Rootless, perform the following steps:
+</p>
+<ol>
+<li>
+<p>Restart your macOS machine.
+</p></li>
+
+<li>
+<p>When the screen turns blank, hold down <em>Command + R</em> until the Apple boot logo appears. This will put your computer into <em>Recovery Mode</em>.
+</p></li>
+
+<li>
+<p>Now, find the <em>Utilities</em> menu from the top and then select <em>Terminal</em>.
+</p></li>
+
+<li>
+<p>With the Terminal window open, type:
+</p></li>
+</ol>
+<pre class="code-block">csrutil disable; reboot</pre>
+<ol>
+<li>
+<p>Your computer will restart with Rootless disabled.
+</p></li>
+</ol>
+
+<div class="note">
+<p><em>Note</em>: A safer way to follow along with this book would be to create a dedicated virtual machine using <em>VMWare</em> or <em>VirtualBox</em> and only disable Rootless on this.
+</p></div>
+
+<p>You can verify if you’ve successfully disabled Rootless by trying the same command in Terminal again once you log into your account.
+</p><pre class="code-block">lldb -n <span class="hljs-type">Finder</span></pre>
+<p>LLDB should now attach itself to the current Finder process. The output of a successful attach should look like this:
+</p><div class="image-90"><img src="graphics/img5.png"  alt="" title="" /></div>
+<p>After verifying a successful attach, detach LLDB by either killing the Terminal window, or typing <code>quit</code> and confirming in the LLDB console.
+</p>
+<h2 class="segment-chapter">Attaching LLDB to Xcode</h2>
+
+<p>Now that you’ve disabled Rootless, you can attach LLDB to any process on your macOS machine (some hurdles may apply, such as with <code>ptrace</code>, but we’ll get to that later). You’re first going to look into an application you frequently use in your day-to-day development: Xcode! Make sure you have the latest version of <em>Xcode 9</em> installed on your computer before continuing.
+</p>
+<p>Open a new Terminal window. Next, edit the Terminal tab’s title by pressing <em>⌘ + Shift + I</em>. A new popup window will appear. Edit the <em>Tab Title</em> to be <em>LLDB</em>.
+</p><div class="image-100"><img src="graphics/img6.png"  alt="" title="" /></div>
+<p>Next, make sure Xcode isn’t running, or you’ll end up with multiple running instances of Xcode, which could cause confusion.
+</p>
+<p>In Terminal, type the following:
+</p><pre class="code-block">lldb</pre>
+<p>This launches LLDB.
+</p>
+<p>Create a new Terminal tab by pressing <em>⌘ + T</em>. Edit the tab’s title again using <em>⌘ + Shift + I</em> and name the tab <em>Xcode stderr</em>. This Terminal tab will contain all output when you print content from the debugger.
+</p>
+<p>Make sure you are on the <em>Xcode stderr</em> Terminal tab and type the following:
+</p><pre class="code-block">~ $ tty</pre>
+<p>You should see something similar to below:
+</p><pre class="code-block">/dev/ttys027</pre>
+<p>Don’t worry if yours is different; I’d be surprised if it wasn’t. Think of this as the address to your Terminal session.
+</p>
+<p>To illustrate what you’ll do with the Xcode stderr tab, create yet another tab and type the following into it:
+</p><pre class="code-block"><span class="hljs-built_in">echo</span> <span class="hljs-string">"hello debugger"</span> 1&gt;/dev/ttys027</pre>
+<p>Be sure to replace your Terminal path with your unique one obtained from the <code>tty</code> command.
+</p>
+<p>Now switch back to the <em>Xcode stderr</em> tab. The words <code>hello debugger</code> should have popped up. You’ll use the same trick to pipe the output of Xcode’s stderr to this tab.
+</p>
+<p>Finally, close the third, unnamed tab and navigate back to the LLDB tab.
+</p>
+<p>To summarize: You should now have two Terminal tabs: a tab named &quot;LLDB&quot;, which contains an instance of LLDB running, and another tab named &quot;Xcode stderr&quot;, which contains the <code>tty</code> command you performed earlier.
+</p>
+<p>From there, enter the following into LLDB:
+</p><pre class="code-block">(lldb) file /Applications/Xcode.app/Contents/MacOS/Xcode</pre>
+<p>This will set the executable target to Xcode.
+</p>
+<div class="note">
+<p><em>Note</em>: If you are using a prerelease version of Xcode, then the name and path of Xcode could be different.
+</p>
+<p>You can check the path of the Xcode you are currently running by launching Xcode and typing the following in Terminal:
+</p>
+<p><code>$ ps -ef `pgrep -x Xcode`</code>
+</p>
+<p>Once you have the path of Xcode, use that new path instead.
+</p></div>
+
+<p>Now launch the Xcode process from LLDB, replacing <code>/dev/ttys027</code> with your Xcode stderr tab’s <code>tty</code> address again:
+</p><pre class="code-block">(lldb) process launch -e /dev/ttys027 --</pre>
+<p>The launch argument <code>e</code> specifies the location of <code>stderr</code>. Common logging functionality, such as Objective-C’s <code>NSLog</code> or Swift’s <code>print</code> function, outputs to stderr — yes, not stdout! You will print your own logging to stderr later.
+</p>
+<p>Xcode will launch after a moment. Switch over to Xcode and click <em>File ▸ New ▸ Project...</em>. Next, select <em>iOS ▸ Application ▸ Single View Application</em> and click <em>Next</em>. Name the product <em>Hello Debugger</em>. Make sure to select <em>Swift</em> as the programming language and deselect any options for Unit or UI tests. Click <em>Next</em> and save the project wherever you wish.
+</p><div class="image-75"><img src="graphics/img7.png"  alt="" title="" /></div>
+<p>You now have a new Xcode project. Arrange the windows so you can see both Terminal and Xcode.
+</p>
+<p>Navigate to Xcode and open <em>ViewController.swift</em>.
+</p>
+<div class="note">
+<p><em>Note</em>: You might notice some output on the Xcode stderr Terminal window; this is due to content logged by the authors of Xcode via NSLog or another stderr console printing function.
+</p></div>
+
+<h3 class="segment-chapter">A &quot;Swiftly&quot; changing landscape</h3>
+
+<p>Apple has been cautious in its adoption of Swift in its own software — and understandably so. No matter one’s (seemingly religious) beliefs on Swift, for better or worse, it’s still an immature language moving at an incredible pace with breaking changes. I still have flashbacks of the “great” Swift <i>2.2 -&gt; 3.0</i> migration and I am sure many of you do too.
+</p>
+<p>These large codebase migrations do not sit well in enterprise environments where frameworks with different dependencies have to play nicely with each other. If one framework containing Swift code has breaking changes, it can bring down a whole codebase. Then imagine if hundreds of frameworks contained Swift; it would be a dependency hell to migrate each framework without breaking the many different repos that depend upon on these frameworks.
+</p>
+<p>However, things are a changin’ at Apple. Apple is now more aggressively adopting Swift in their own applications such as the iOS Simulator... and even Xcode!
+</p>
+<p>At last count, Xcode 9 includes <i>over 40</i> frameworks which contain Swift.
+</p>
+<p>You can query this information yourself by typing the following into LLDB:
+</p><pre class="code-block"> (lldb) script print &quot;\n&quot;.join([i.file.basename for i in lldb.target.modules if i.FindSection(&quot;__swift3_typeref&quot;)])</pre>
+<p>This will dump out all the dynamically loaded modules Xcode has loaded into the process that contain or link to Swift code.
+</p>
+<p>This is using Python along with LLDB’s Python module (confusingly also called &quot;lldb&quot;). You’ll get very accustomed to working with this module in section IV of this book as you learn to build custom, advanced LLDB scripts.
+</p>
+<p>From this list of dynamic Swift libraries, one is a particular module of interest: <em>IDEPegasusSourceEditor</em>. This is a dynamic library (just like <i>UIKit</i> or <i>Foundation</i>) that contains some interesting Swift classes pertaining to the code editing views in Xcode.
+</p>
+<div class="note">
+<p><em>Note</em>: Apple frequently uses code names for internal development features. For example, an iPad’s picture-on-picture feature is commonly referred to as “Medusa” in internal methods — and no, not all Apple code names are Greek code names. So, what’s up with this Pegasus name? There’s often specific reasoning to the Apple development team (or manager/s?) assigning these names. Your guess is as good as mine, but I can see a logical connection between a mythological creature that symbolizes wisdom and the visual display to your source code.
+</p></div>
+
+<p>Remember this module name, as you’ll be seeing it quite a bit in a second.
+</p>
+<h3 class="segment-chapter">Finding a class with a click</h3>
+
+<p>Now that Xcode is set up and your Terminal debugging windows are correctly created and positioned, it’s time to start exploring Xcode using the help of the debugger.
+</p>
+<p>While debugging, knowledge of the Cocoa SDK can be extremely helpful. For example, <code><em>-[NSView hitTest:]</em></code> is a useful Objective-C method that returns the class responsible for the handled click or gesture for an event in the run loop. This method will first be triggered on the containing <code>NSView</code> and recursively drill into the furthest subview that handles this touch. You can use this knowledge of the Cocoa SDK to help determine the class of the view you’ve clicked on.
+</p>
+<p>In your LLDB tab, type <code>Ctrl + C</code> to pause the debugger. From there, type:
+</p><pre class="code-block">(lldb) b -[NSView hitTest:]
+Breakpoint 1: where = AppKit`-[NSView hitTest:], address = 0x000000010338277b</pre>
+<p>This is your first breakpoint of many to come. You’ll learn the details of how to create, modify, and delete breakpoints in Chapter 4, “Stopping in Code”, but for now simply know you’ve created a breakpoint on <code>-[NSView hitTest:]</code>.
+</p>
+<p>Xcode is now paused thanks to the debugger. Resume the program:
+</p><pre class="code-block">(lldb) continue</pre>
+<p>Click anywhere in the Xcode window (or in some cases even moving your cursor over Xcode will do the same); Xcode will instantly pause and LLDB will indicate a breakpoint has been hit.
+</p><div class="image-100"><img src="graphics/img8.png"  alt="" title="" /></div>
+<p>The <code>hitTest:</code> breakpoint has fired. You can inspect which view was hit by inspecting the <em>RDI</em> CPU register. Print it out in LLDB:
+</p><pre class="code-block">(lldb) po $rdi</pre>
+<p>This command instructs LLDB to print out the contents of the object at the memory address referenced by what’s stored in the <code>RDI</code> assembly register.
+</p>
+<div class="note">
+<p><em>Note</em>: Wondering why the command is <code>po</code>? <code>po</code> stands for <i>print object</i>. There’s also <code>p</code>, which simply prints the contents of <code>RDI</code>. <code>po</code> is usually more useful as it gives the <code>NSObject</code>’s <code>description</code> or <code>debugDescription</code> methods, if available.
+</p></div>
+
+<p>Assembly is an important skill to learn if you want to take your debugging to the next level. It will give you insight into Apple’s code — even when you don’t have any source code to read from. It will give you a greater appreciation of how the Swift compiler team danced in and out of Objective-C with Swift, and it will give you a greater appreciation of how everything works on your Apple devices.You will learn more about registers and assembly in Chapter 10, “Assembly Register Calling Convention”.
+</p>
+<p>For now, simply know the <code>$rdi</code> register in the above LLDB command contains the instance of the subclass <code>NSView</code> the <code>hitTest:</code> method was called upon.
+</p>
+<p>Note the output will produce different results depending on where you clicked and what version of Xcode you’re using. It could give a private class specific to Xcode, or it could give you a public class belonging to Cocoa.
+</p>
+<p>In LLDB, type the following to resume the program:
+</p><pre class="code-block">(lldb) continue</pre>
+<p>Instead of continuing, Xcode will likely hit another breakpoint for <code>hitTest:</code> and pause exection. This is due to the fact that the <code>hitTest:</code> method is recursively calling this method for all subviews contained within the parent view that was clicked. You can inspect the contents of this breakpoint, but this will soon become tedious since there are so many views that make up Xcode.
+</p>
+<h3 class="segment-chapter">Filter breakpoints for important content</h3>
+
+<p>Since there are so many <code>NSView</code>s that make up Xcode, you need a way to filter out some of the noise and only stop on the <code>NSView</code> relevant to what you’re looking for. This is an example of debugging a frequently-called method, where you want to find a unique case that helps pinpoint what you’re really looking for.
+</p>
+<p>As of Xcode 9, the class responsible for visually displaying your code in the Xcode IDE is a private Swift class belonging to the <code>IDEPegasusSourceEditor</code> module, named <code>SourceCodeEditorView</code>. This class acts as the visual coordinator to hand off all your code to other private classes to help compile and create your applications.
+</p>
+<p>Let’s say you want to break only when you click an instance of <code>NSView</code>. You can modify the existing breakpoint to stop only on a <code>NSView</code> click by using <em>breakpoint conditions</em>.
+</p>
+<p>Provided you still have your <code>-[NSView hitTest:]</code> breakpoint set, and it’s the only active breakpoint in your LLDB session, you can modify that breakpoint with the following LLDB command:
+</p><pre class="code-block">(lldb) breakpoint modify 1 -c &apos;(BOOL)[$rdi isKindOfClass:(id)NSClassFromString(@&quot;IDEPegasusSourceEditor.SourceCodeEditorView&quot;)]&apos;</pre>
+<p>This command modifies breakpoint 1 and creates a condition which gets evaluated everytime <code>-[NSView hitTest:]</code> fires. If the condition evaluates to true, then execution will pause in the debugger. This condition checks that the instance of the <code>NSView</code> is of type <code>IDEPegasusSourceEditor.SourceCodeEditorView</code>.
+</p>
+<p>After modifying your breakpoint above, click on the <em>code area</em> in Xcode. LLDB should stop on <code>hitTest:</code>. Print out the instance of the class this method was called on:
+</p><pre class="code-block">(lldb) po $rdi</pre>
+<p>Your output should look something like this:
+</p><pre class="code-block">SourceCodeEditorView: Frame: (0.0, 0.0, 1140.0, 393.0), Bounds: (0.0, 0.0, 1140.0, 393.0) contentViewOffset: 0.0</pre>
+<p>This is printing out the object’s <em>description</em>. You’ll notice that there is no pointer reference within this, because Swift hides the pointer reference. There’s several ways to get around this if you need the pointer reference. The easiest is to use <em>print formatting</em>. Type the following in LLDB:
+</p><pre class="code-block">(lldb) p/x $rdi</pre>
+<p>You’ll get something like:
+</p><pre class="code-block">(unsigned long) $3 = 0x00007f96f10b3a00</pre>
+<p>Since RDI points to a valid Objective-C <code>NSObject</code>, you can also get the same info just by <code>po</code>’ing this address instead of the register.
+</p>
+<p>Type the following into LLDB while making sure to replace the address with your own:
+</p><pre class="code-block">(lldb) po 0x00007f96f10b3a00</pre>
+<p>You’ll get the same output as earlier.
+</p>
+<p>You might be skeptical that this reference pointed at by the RDI register is actually pointing to the <code>NSView</code> that displays your code. You can easily verify if that’s true or not by typing the following in LLDB:
+</p><pre class="code-block">(lldb) po [$rdi setHidden:!(BOOL)[$rdi isHidden]]; [CATransaction flush]</pre>
+<div class="note">
+<p><em>Note</em>: Kind of a long command to type out, right? In Chapter 9. “Regex Commands”, you’ll learn how to build convenient shortcuts so you don’t have to type out these long LLDB commands.
+</p></div>
+
+<p>Provided RDI is pointing to the correct reference, your code editor view will disappear!
+</p><div class="image-90"><img src="graphics/img9.png"  alt="" title="" /></div>
+<p>You can toggle this view on and off simply by repeatedly pressing Enter; LLDB will automatically execute the previous command.
+</p>
+<p>Copy the address down that RDI is referencing (copy it to your clipboard or add it to the stickies app). You’ll reference it again in a second. Alternatively, did you notice that output preceding the hex value in the <code>p/x $rdi</code> command? In my output, I got <em>$</em><em>3</em>, which means that you can use <code>$3</code> as a reference for that pointer value you just grabbed. This is incredibly useful when the RDI register points to something else and I still want to reference this <code>NSView</code> at a later time.
+</p>
+<p>Since this isn’t immediately apparent as an <code>NSView</code> subclass, you can check if this instance is an <code>NSView</code> subclass by repeatedly figuring out the class’s superclass.
+</p><pre class="code-block">(lldb) po [$rdi superclass]</pre>
+<p>... Keep on going until you find it.
+</p><pre class="code-block">(lldb) po [[$rdi superclass] superclass]</pre>
+<p>Wait — we’re using Objective-C on a Swift class?! You bet! You’ll discover that a Swift class is <i>mostly</i> all Objective-C underneath the covers (however the same can’t be said about Swift structs). You should confirm this is the case in Swift. To do this, first enter the following:
+</p><pre class="code-block">(lldb) ex -l swift -- import Foundation
+(lldb) ex -l swift -- import AppKit</pre>
+<p>The <code>ex</code> command (short for <code>expression</code>) lets you evaluate code and is the foundation for your <code>p</code>/<code>po</code> LLDB commands. <code>-l swift</code> tells LLDB to interpret your commands as Swift code. What you did is essentially imported to appropriate headers to call methods in both of these modules through Swift. You’ll need these in the next two commands.
+</p>
+<p>Enter the following, replacing <code>0x14bdd9b50</code> with the memory address of your <code>NSView</code> subclass you found previously:
+</p><pre class="code-block">(lldb) ex -l swift -o -- unsafeBitCast(0x14bdd9b50, to: NSObject.self)
+(lldb) ex -l swift -o -- unsafeBitCast(0x14bdd9b50, to: NSObject.self) is NSView</pre>
+<p>These commands print out the <code>SourceCodeEditorView</code> instance, and then check if it’s an <code>NSView</code> subclass — but this time using Swift! You’ll see something similar to below:
+</p><pre class="code-block">(lldb) ex -l swift -o -- unsafeBitCast(0x14bdd9b50, to: NSObject.self)
+SourceCodeEditorView: Frame: (0.0, 0.0, 868.0, 524.0), Bounds: (0.0, 0.0, 868.0, 524.0) contentViewOffset: 0.0
+
+(lldb) ex -l swift -o -- unsafeBitCast(0x14bdd9b50, to: NSObject.self) is NSView
+true</pre>
+<p>Using Swift requires much more typing. In addition, when stopping the debugger out of the blue, or on Objective-C code, LLDB will default to Objective-C. It’s possible to alter this, but this book prefers to use Objective-C since the Swift REPL can be brutal for error-checking in the debugger.
+</p>
+<p>For now, you’ll use the Objective-C debugging context to aid in manipulating this <code>NSView</code>.
+</p>
+<p>Since this is a subclass of <code>NSView</code>, all the methods of <code>NSView</code> apply. Enter the following:
+</p><pre class="code-block">(lldb) po [$rdi string]</pre>
+<p>This prints out the contents of whatever file you have open in Xcode.
+</p>
+<p>Now, how can you go about querying potentially overridden, Objective-C bridged methods on this instance of <code>IDEPegasusSourceEditor.SourceCodeEditorView</code>?
+</p>
+<p>You can use the <code>image lookup</code> command with the regular expression options to search for all methods of <code>SourceCodeEditorView</code> that begin with the <code>objc</code> bridge and contain the word &quot;getter&quot;. In LLDB, type the ever-so-short command:
+</p><pre class="code-block">(lldb) image lookup -rn objc\sIDEPegasusSourceEditor.SourceCodeEditorView.*getter</pre>
+<p>This will generate a scary amount of output as soon below in the truncated output.
+</p><pre class="code-block">10 matches found in /Applications/Xcode.app/Contents/PlugIns/IDEPegasusSourceEditor.ideplugin/Contents/MacOS/IDEPegasusSourceEditor:
+Address: IDEPegasusSourceEditor[0x00000000000a2020] (IDEPegasusSourceEditor.__TEXT.__text + 656048)
+Summary: IDEPegasusSourceEditor`@objc IDEPegasusSourceEditor.SourceCodeEditorView.hostingEditor.getter : weak Swift.Optional&lt;IDEPegasusSourceEditor.SourceCodeEditor&gt;        Address: IDEPegasusSourceEditor[0x00000000000a2c70] (IDEPegasusSourceEditor.__TEXT.__text + 659200)
+Summary: IDEPegasusSourceEditor`@objc IDEPegasusSourceEditor.SourceCodeEditorView.completionController.getter : Swift.ImplicitlyUnwrappedOptional&lt;__ObjC.DVTTextCompletionController&gt;        Address: IDEPegasusSourceEditor[0x00000000000a2d00] (IDEPegasusSourceEditor.__TEXT.__text + 659344)
+Summary: IDEPegasusSourceEditor`@objc IDEPegasusSourceEditor.SourceCodeEditorView.completionsDataSource.getter : __ObjC.DVTTextCompletionDataSource        Address: IDEPegasusSourceEditor[0x00000000000a2d60] (IDEPegasusSourceEditor.__TEXT.__text + 659440)</pre>
+<p>Focus on the content immediately following the <code>Summary:</code> sections. These are the Objective-C bridging methods which you can apply to Objective-C syntax to. For example, you can execute the following code:
+</p><pre class="code-block">(lldb) po [$rdi hostingEditor]</pre>
+<p>Or also:
+</p><pre class="code-block">(lldb) po [$rdi language]</pre>
+<p>Any Swift you can find that contains <code>@objc</code> in the method signature implies you can use this via Objective-C. This is a convenient workaround since the <code>IDEPegasusSourceEditor</code>’s Swift-only code is much more inconvenient to execute in LLDB.
+</p>
+<h3 class="segment-chapter">Executing private Swift methods</h3>
+
+<p>That’s all great, but really, how can you execute private Swift methods?
+</p>
+<p>Typically, when LLDB interacts with a codebase, it needs to know all about the module’s <em>module map</em> (a file that contains the extension <code>.modulemap</code>). It’s this information that helps you in your typical Swift development, and LLDB needs this information as well to figure out what code it can and can’t execute. Do you remember <code>import</code>’ing the <code>Foundation</code> and <code>AppKit</code> module? This allows the Swift LLDB’s code-execution-compiler (JIT) to interact with the methods within those frameworks through the modulemaps.
+</p>
+<p>When executing Swift code in LLDB, not having that module map will not let me execute code that I know exists. This is much different than, say, in Objective-C (or even just plain C) where the compiler doesn’t try to hold your hand as much.
+</p>
+<p>Jumping back to <code>IDEPegasusSourceEditor</code> module, you don’t have a <code>.modulemap</code> file which you can import to access Swift code in this framework. This means you need to creatively figure out the mangled function name for whatever Swift function you want to access, and then use C’s <code>extern</code> to declare it and execute it.
+</p>
+<p>Let’s go after an Objective-C bridging method that is implemented in Swift that belongs to the <code>SourceCodeEditorView</code> class. In LLDB, search for a property:
+</p><pre class="code-block">(lldb) image lookup -rvn  objc\sSourceEditor.SourceEditorView.insertText\(Any\)</pre>
+<p>Remember, you are favoring doing over learning. You’ll spend more than enough time on the how and why of what’s happening, in the upcoming chapters.
+</p>
+<p>This will dump out the verbose output for the method <code>@objc SourceEditor.SourceEditorView.insertText(Any)</code>. At the bottom of the output is the <em>mangled Swift name</em> (look for <code>mangled=&quot;_T012SourceEditor0aB4ViewC10insertTextyypFTo&quot;</code>). Copy this value and externally declare it in LLDB:
+</p><pre class="code-block">(lldb) po extern void _T012SourceEditor0aB4ViewC10insertTextyypFTo(long, char *,id);</pre>
+<p>This will tell LLDB that there exists a method named <code>\_T012SourceEditor0aB4ViewC10insertTextyypFTo</code> that takes three parameters. How in the world did I know this takes three parameters? Check out Section II to gain a better understanding of assembly, and what happens in Objective-C and Swift when a function is called. Now that the method has been declared and LLDB knows about it, execute the following command:
+</p><pre class="code-block"> (lldb) po _T012SourceEditor0aB4ViewC10insertTextyypFTo($rdi,0,@&quot;wahahahahah&quot;)</pre>
+<p>Let’s see what happened. Resume execution in LLDB:
+</p><pre class="code-block">(lldb) continue</pre>
+<p>In Xcode’s <code>SourceCodeEditorView</code> instance, find where your cursor is located and scan for anything that’s different in the code.
+</p>
+<p>You’ll see a new string with <code>wahahahahah</code> in your IDE!
+</p>
+<p>Now, I know that Objective-C isn’t very popular nowadays <a href="https://stackoverflow.blog/2017/10/31/disliked-programming-languages/">https://stackoverflow.blog/2017/10/31/disliked-programming-languages/</a>, but c’mon, how much easier is it to write <code>[$rdi insertText:@&quot;wahahahahah&quot;]</code>, than to use the method described above?
+</p>
+<p>If I can, I’ll <i>always</i> choose using Objective-C in the debugger because LLDB is much more stable with Objective-C than it is with Swift. In addition, in Objective-C (as well as Swift bridging methods for Objective-C), the instance of the class (or class itself) is always passed first into the function. The same isn’t always true for all Swift functions. Finally, I don’t have to battle Swift’s type checking and comparatively slow compiler when executing code in LLDB.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>This was a breadth-first, whirlwind introduction to using LLDB and attaching to a process where you don’t have any source code to aid you. This chapter glossed over a lot of detail, but the goal was to get you right into the debugging/reverse engineering process. To some, this first chapter might have come off as a little scary, but we’ll slow down and describe methods in detail from here on out. There are lots of chapters remaining to get you into the details!
+</p>
+<p>Keep reading to learn the essentials in the remainder of Section 1. Happy debugging!
+</p></body></html>

@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 14: Dynamic Frameworks</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 14: Dynamic Frameworks</h1>
+
+<p>If you’ve developed any type of Apple GUI software, you’ve definitely used dynamic frameworks in your day-to-day development.
+</p>
+<p>A dynamic framework is a bundle of code loaded into an executable at runtime, instead of at compile time. Examples in iOS include <code>UIKit</code> and the <code>Foundation</code> frameworks. Frameworks such as these contain a dynamic library and optionally assets, such as images.
+</p>
+<p>There are numerous advantages in electing to use dynamic frameworks instead of static frameworks. The most obvious advantage is you can make updates to the framework without having to recompile the executable that depends on the framework.
+</p>
+<p>Imagine if, for every major or minor release of iOS, Apple said, &quot;Hey y’all, we need to update UIKit so if you could go ahead and update your app as well, that would be grrrreat.&quot; There would be blood in the streets and the only competition would be Android vs. Windows Phone!
+</p>
+<h2 class="segment-chapter">Why dynamic frameworks?</h2>
+
+<p>In addition to the positives of using dynamic frameworks, the kernel can map the dynamic framework to multiple processes that depend on the framework. Take UIKit, for example: it would be stupid and a waste of disk space if each running iOS app kept a unique copy of UIKit resident in memory. Furthermore, there could be different versions of UIKit compiled into each app, making it incredibly difficult to track down bugs.
+</p>
+<p>As of iOS 8, Apple decided to lift the dynamic library restriction and allow third-party dynamic libraries to be included in your app. The most obvious advantage was that developers could share frameworks across different iOS extensions, such as the Today Extension and Action Extensions.
+</p>
+<p>Today, all Apple platforms allow third party dynamic frameworks to be included without rejection in the ever-so-lovely Apple Review process.
+</p>
+<p>With dynamic frameworks comes a very interesting aspect of learning, debugging, and reverse engineering. Since you’ve the ability to load the framework at runtime, you can use LLDB to explore and execute code at runtime, which is great for spelunking in both public and private frameworks.
+</p>
+<h2 class="segment-chapter">Statically inspecting an executable’s frameworks</h2>
+
+<p>Compiled into each executable is a list of dynamic libraries (most often, frameworks), expected to be loaded at runtime. This can be further broken down into a list of required frameworks and a list of optional frameworks. The loading of these dynamic libraries into memory is done using a special framework called the <em>dynamic loader</em>, or <code>dyld</code>.
+</p>
+<p>If a required framework fails to load, the dynamic library loader will kill the program. If an optional framework fails to load, everything continues as usual, but code from that library will obviously not be able to run!
+</p>
+<p>You may have used the optional framework feature in the past, perhaps when your iOS or Mac app needed to use code from a library added in a newer OS version than the version targeted by your app. In such cases, you’d perform a runtime check around calls to code in the optional library to check if the library was loaded.
+</p>
+<p>I spout tons of this theory stuff, but it’ll make more sense if you see it for yourself.
+</p>
+<p>Open Xcode and create a new iOS project, <em>Single View Application</em> named <em>DeleteMe</em>. Yep, this project won’t hang around for long, so feel free to remove it once you’re done with this chapter. You’ll not write a line of code within the app (but within the load commands is a different story). Make sure you choose Objective-C then click <code>Next</code>.
+</p><div class="image-55"><img src="graphics/img71.png"  alt="" title="" /></div>
+<div class="note">
+<p><em>Note</em>: You’re using Objective-C because there’s more going on under the hood in a Swift app. At the time of writing, the Swift ABI is not finalized, so every method Swift uses to bridge Objective-C uses a dynamic framework packaged into your app to “jump the gap” to Objective-C. This means within the Swift bridging frameworks are the corresponding dependencies to the proper Objective-C Frameworks. For example, <em>libswiftUIKit.dylib</em> will have a required dependency on the UIKit framework.
+</p></div>
+
+<p>Click on the Xcode project at the top of the project navigator. Then click on the <em>DeleteMe</em> target. Next, click on the <em>Build Phases</em> and open up the <em>Link Binary With Libraries</em>.
+</p>
+<p>Add the <em>Social</em> and <em>CallKit</em> framework. To the right of the CallKit framework, select <em>Optional</em> from the drop-down. Ensure that the Social framework has the <em>Required</em> value set as shown below.
+</p><div class="image-90"><img src="graphics/img72.png"  alt="" title="" /></div>
+<p>Build the project on the simulator using <em>Cmd + B</em>. <em>Do not run just yet</em>. Once the project has been successfully built for the simulator, open the <em>products</em> directory in the Xcode project navigator.
+</p>
+<p>Right click on the produced executable, <code>DeleteMe</code>, and select <em>Show in Finder</em>.
+</p><div class="image-80"><img src="graphics/img73.png"  alt="" title="" /></div>
+<p>Next, open up the <code>DeleteMe</code> IPA by right clicking the IPA and selecting <em>Show Package Contents</em>.
+</p><div class="image-50"><img src="graphics/img74.png"  alt="" title="" /></div>
+<p>Next, open a new <code>Terminal</code> window and type the following but <em>don’t press Enter</em>:
+</p><pre class="code-block">otool -L </pre>
+<p>Be sure to add a space at the end of the command. Next, drag the <code>DeleteMe</code> executable from the <code>Finder</code> window into the <code>Terminal</code> window. When finished, you should have a command that looks similar to the following:
+</p><pre class="code-block">otool -L /Users/derekselander/Library/Developer/Xcode/DerivedData/DeleteMe-fqycokvgjilklcejwonxhuyxqlej/Build/Products/Debug-iphonesimulator/DeleteMe.app/DeleteMe</pre>
+<p>Press Enter and observe the output. You’ll see something similar to the following:
+</p><pre class="code-block">/System/Library/Frameworks/CallKit.framework/CallKit (compatibility version 1.0.0, current version 1.0.0)
+/System/Library/Frameworks/Social.framework/Social (compatibility version 1.0.0, current version 87.0.0)
+/System/Library/Frameworks/Foundation.framework/Foundation (compatibility version 300.0.0, current version 1349.13.0)
+/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
+/usr/lib/libSystem.dylib (compatibility version 1.0.0, current version 1238.0.0)
+/System/Library/Frameworks/UIKit.framework/UIKit (compatibility version 1.0.0, current version 3600.6.21)</pre>
+<p>You found the compiled binary <code>DeleteMe</code> and dumped out the list of dynamic frameworks it links to using the ever-so-awesome <code><em>otool</em></code>. Take note of the instructions to <code>CallKit</code> and the <code>Social</code> framework you manually added earlier. By default, the compiler automatically adds the “essential” frameworks to the iOS app, like <code>UIKit</code> and <code>Foundation</code>.
+</p>
+<p>Take note of the directory path responsible for loading these frameworks:
+</p><pre class="code-block">/System/Library/Frameworks/
+/usr/lib/</pre>
+<p>Remember these directories; you’ll revisit them for a “eureka” moment later on.
+</p>
+<p>Let’s go a tad bit deeper. Remember how you optionally required the <code>CallKit</code> framework, and required the <code>Social</code> framework? You can view the results of these decisions by using <code>otool</code>.
+</p>
+<p>In <code>Terminal</code>, press the up arrow to recall the previous <code>Terminal</code> command. Next, change the capital <em>L</em> to a lowercase <em>l</em> and press Enter. You’ll get a longer list of output that shows all the <em>load commands</em> for the <code>DeleteMe</code> executable.
+</p><pre class="code-block">otool <span class="hljs-_">-l</span> /Users/derekselander/Library/Developer/Xcode/DerivedData/DeleteMe-fqycokvgjilklcejwonxhuyxqlej/Build/Products/Debug-iphonesimulator/DeleteMe.app/DeleteMe</pre>
+<p>Search for load commands pertaining to <code>CallKit</code> by pressing <em>Cmd + F</em> and typing <em>CallKit</em>. You’ll stumble across a load command similar to the following:
+</p><pre class="code-block">Load <span class="hljs-built_in">command</span> 12
+          cmd LC_LOAD_WEAK_DYLIB
+      cmdsize 80
+         name /System/Library/Frameworks/CallKit.framework/CallKit (offset 24)
+   time stamp 2 Wed Dec 31 17:00:02 1969
+      current version 1.0.0
+compatibility version 1.0.0</pre>
+<p>Next, search for the <code>Social</code> framework as well:
+</p><pre class="code-block">Load <span class="hljs-built_in">command</span> 13
+          cmd LC_LOAD_DYLIB
+      cmdsize 80
+         name /System/Library/Frameworks/Social.framework/Social (offset 24)
+   time stamp 2 Wed Dec 31 17:00:02 1969
+      current version 87.0.0
+compatibility version 1.0.0</pre>
+<p>Compare the <em>cmd</em> in the load commands output. In <code>CallKit</code>, the load command is <code>LC_LOAD_WEAK_DYLIB</code>, which represents an optional framework, while the <code>LC_LOAD_DYLIB</code> of the <code>Social</code> load command indicates a required framework.
+</p>
+<p>This is ideal for an application that supports multiple iOS versions. For example, if you supported iOS 9 and up, you would strongly link the <code>Social</code> framework and weak link the <code>CallKit</code> framework since it’s only available in iOS 10 and up.
+</p>
+<h2 class="segment-chapter">Modifying the load commands</h2>
+
+<p>There’s a nice little command that lets you augment and add the framework load commands named <code><em>install_name_tool</em></code>.
+</p>
+<p>Open Xcode and build and run the application so the simulator is running <code>DeleteMe</code>. Once running in the LLDB <code>Terminal</code>, verify the <code>CallKit</code> framework is loaded into the <code>DeleteMe</code> address space. Pause the debugger, then type the following into LLDB:
+</p><pre class="code-block">(lldb) image list CallKit</pre>
+<p>If the <code>CallKit</code> module is correctly loaded into the process space, you’ll get output similar to the following:
+</p><pre class="code-block">[  0] 0484D8BA-5CB8-3DD3-8136-D8A96FB7E15B 0x0000000102d10000 /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/System/Library/Frameworks/CallKit.framework/CallKit </pre>
+<p>Time to hunt down where the <code>DeleteMe</code> application is running from. Open a new Terminal window and type the following:
+</p><pre class="code-block">pgrep -fl DeleteMe</pre>
+<p>Provided <code>DeleteMe</code> is running, this will give you the full path of <code>DeleteMe</code> under the simulator app. You’ll get output similar to the following:
+</p><pre class="code-block">61175 /Users/derekselander/Library/Developer/CoreSimulator/Devices/D0576CB9-42E1-494B-B626-B4DB75411700/data/Containers/Bundle/Application/474C8786-CC4F-4615-8BB0-8447DC9F82CA/DeleteMe.app/DeleteMe</pre>
+<p>You’ll now modify this executable’s load commands to point to a different framework.
+</p>
+<p>Grab the fullpath to the <code>DeleteMe</code> executable.
+</p>
+<p>Stop the execution of the <code>DeleteMe</code> executable and temporarily close Xcode. If you were to accidentally build and run the <code>DeleteMe</code> application through Xcode at a later time, it would undo any tweaks you’re about to make.
+</p>
+<p>In the same <code>Terminal</code> window, paste the full path you received from the output of your <code>pgrep</code> command along with the <code>install_name_tool</code> command as follows:
+</p><pre class="code-block">install_name_tool \
+  /Users/derekselander/Library/Developer/CoreSimulator/Devices/D0576CB9-42E1-494B-B626-B4DB75411700/data/Containers/Bundle/Application/474C8786-CC4F-4615-8BB0-8447DC9F82CA/DeleteMe.app/DeleteMe</pre>
+<p>Before you execute this command, add the change argument along with the full path to the <code>CallKit</code> framework and the new framework you want to replace it with. Just for kicks, you’ll replace it with the <code>NotificationCenter</code> framework.
+</p><pre class="code-block">install_name_tool \
+  -change \
+     /System/Library/Frameworks/CallKit.framework/CallKit \
+     /System/Library/Frameworks/NotificationCenter.framework/NotificationCenter \
+       /Users/derekselander/Library/Developer/CoreSimulator/Devices/D0576CB9-42E1-494B-B626-B4DB75411700/data/Containers/Bundle/Application/474C8786-CC4F-4615-8BB0-8447DC9F82CA/DeleteMe.app/DeleteMe</pre>
+<p>Verify if your changes were actually applied:
+</p><pre class="code-block">otool -L /Users/derekselander/Library/Developer/CoreSimulator/Devices/D0576CB9-42E1-494B-B626-B4DB75411700/data/Containers/Bundle/Application/474C8786-CC4F-4615-8BB0-8447DC9F82CA/DeleteMe.app/DeleteMe</pre>
+<p>If everything went smoothly, you’ll notice something different about the linked frameworks now...
+</p><pre class="code-block">/System/Library/Frameworks/NotificationCenter.framework/NotificationCenter (compatibility version 1.0.0, current version 1.0.0)
+/System/Library/Frameworks/Social.framework/Social (compatibility version 1.0.0, current version 87.0.0)
+/System/Library/Frameworks/Foundation.framework/Foundation (compatibility version 300.0.0, current version 1349.13.0)
+/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
+/usr/lib/libSystem.dylib (compatibility version 1.0.0, current version 1238.0.0)
+/System/Library/Frameworks/UIKit.framework/UIKit (compatibility version 1.0.0, current version 3600.6.21)</pre>
+<p>Verify these changes exist at runtime.
+</p>
+<p>You’re in a bit of a predicament here. If you were to  build and run a new version of <code>DeleteMe</code> using Xcode, it would erase these changes. Instead, launch the <code>DeleteMe</code> application through the simulator and then attach to it in a new LLDB <code>Terminal</code> window. To do this, launch <code>DeleteMe</code> in the simulator. Next, type the following into Terminal:
+</p><pre class="code-block">lldb -n DeleteMe</pre>
+<p>In LLDB, check if the <code>CallKit</code> framework is still loaded.
+</p><pre class="code-block">(lldb) image list CallKit</pre>
+<p>You’ll get an error as output:
+</p><pre class="code-block">error: no modules found that match &apos;CallKit&apos;</pre>
+<p>Can you guess what you’ll do next? Yep! Verify the <code>NotificationCenter</code> framework is now loaded.
+</p><pre class="code-block">(lldb) image list NotificationCenter</pre>
+<p>Boom! You’ll get output similar to the following:
+</p><pre class="code-block">[  0] 0FCE1DF5-7BAC-3195-94CB-C6100116FF99 0x000000010b8c7000 /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/System/Library/Frameworks/NotificationCenter.framework/NotificationCenter</pre>
+<p>Changing around frameworks (or adding them!) to an already compiled binary is cool, but that took a little bit of work to set up. Fortunately, LLDB is wonderful for loading frameworks in to a process at runtime, which is what you’ll do next. Keep that LLDB Terminal session alive, because you’ll learn about a much easier way to load in frameworks.
+</p>
+<h2 class="segment-chapter">Loading frameworks at runtime</h2>
+
+<p>Before you get into the fun of learning how to load and explore commands at runtime, let me give you a command to help explore directories using LLDB. Start by adding the following to your <code>~/.lldbinit</code> file:
+</p><pre class="code-block">command regex ls &apos;s/(.+)/po @import Foundation; [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@&quot;%1&quot; error:nil]/&apos;</pre>
+<p>This creates a command named <code>ls</code>, which will take the directory path you give it and dump out the contents. This command will work on the directory of the device that’s being debugged. For example, since you’re running on the simulator on your computer’s local drive it will dump that directory. If you were to run this on an attached iOS, tvOS or other appleOS device, it would dump the directory you give it on that device, with one minor caveat which you’ll learn about shortly.
+</p>
+<p>Since LLDB is already running and attached to <code>DeleteMe</code>, you’ll need to load this command into LLDB manually as well since LLDB has already read the <code>~/.lldbinit</code> file. Type the following into your LLDB session:
+</p><pre class="code-block">(lldb) command source ~/.lldbinit</pre>
+<p>This simply reloads your <code>lldbinit</code> file.
+</p>
+<p>Next, find the full path to the frameworks directory in the simulator by typing the following:
+</p><pre class="code-block">(lldb) image list -d UIKit</pre>
+<p>This will dump out the directory holding UIKit.
+</p><pre class="code-block">[  0] /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk//System/Library/Frameworks/UIKit.framework</pre>
+<p>You actually want to go one level higher to the <code>Frameworks</code> directory. Copy that full directory path and use the new command <code>ls</code> that you just created, like so:
+</p><pre class="code-block">(lldb) ls /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk//System/Library/Frameworks/</pre>
+<p>This will dump all the <i>public</i> frameworks available to the simulator. There are many more frameworks to be found in different directories, but you’ll start here first.
+</p>
+<p>From the list of frameworks, load the <em>Speech</em> framework into the <code>DeleteMe</code> process space like so:
+</p><pre class="code-block">(lldb) process load /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk//System/Library/Frameworks/Speech.framework/Speech</pre>
+<p>LLDB will give you some happy output saying the <code>Speech</code> framework was loaded into your process space. Yay!
+</p>
+<p>Here’s something even cooler. By default, <code>dyld</code> will search a set of directories if it can’t find the location of the framework. You don’t need to specify the full path to the framework, just the framework library along with the framework’s name.
+</p>
+<p>Try this out by loading the <code>MessagesUI</code> framework.
+</p><pre class="code-block">(lldb) process load MessageUI.framework/MessageUI</pre>
+<p>You’ll get the following output:
+</p><pre class="code-block"><span class="hljs-type">Loading</span> <span class="hljs-string">"MessageUI.framework/MessageUI"</span>...ok
+<span class="hljs-type">Image</span> <span class="hljs-number">1</span> loaded.</pre>
+<p>Sweet.
+</p>
+<h2 class="segment-chapter">Exploring frameworks</h2>
+
+<p>One of the foundations of reverse engineering is exploring dynamic frameworks. Since a dynamic framework requires the code to compile the binary into a <em>position independent</em> executable, you can still query a significant amount of information in the dynamic framework — even when the compiler strips the framework of debugging symbols. The binary needs to use position-independent code because the compiler doesn’t know exactly where the code will reside in memory once <code>dyld</code> has done its business.
+</p>
+<p>Having solid knowledge of how an application interacts with a framework can also give you insight into how the application works itself. For example, if a stripped application is using a <code>UITableView</code>, I’ll set breakpoint queries in certain methods in <code>UIKit</code> to determine what code is responsible for the <code>UITableViewDataSource</code>.
+</p>
+<p>Often when I’m exploring a dynamic framework, I’ll simply load it into the processes address space and start running various <code>image lookup</code> queries (or my custom LLDB <code>lookup</code> command available at <a href="https://github.com/DerekSelander/lldb">https://github.com/DerekSelander/lldb</a>) to see what the module holds.
+</p>
+<p>From there, I’ll execute various interesting methods that look like they’d be fun to play around with.
+</p>
+<p>If you jumped chapters and have that clueless face going on for the <code>image lookup</code> command, check out Chapter 7, “Image”.
+</p>
+<p>Here’s a nice little LLDB command regex you might want to stick into your <code>~/.lldbinit</code> file. It dumps Objective-C easily accessible class methods (i.e. Singletons) for exploration.
+</p>
+<p>Add the following to your <code>~/.lldbinit</code> file.
+</p><pre class="code-block">command regex dump_stuff &quot;s/(.+)/image lookup -rn &apos;\+\[\w+(\(\w+\))?\ \w+\]$&apos; %1 /&quot;</pre>
+<p>This command, <code>dump_stuff</code>, expects a framework or frameworks as input and will dump Objective-C class methods that have zero arguments. This definitely isn’t a catch-all for all Objective-C naming conventions, but is a nice, simple command to use for a quick first pass when exploring a framework.
+</p>
+<p>Load this command into the active LLDB session and then give it a go with the Social framework.
+</p><pre class="code-block">(lldb) command source ~/.lldbinit
+(lldb) dump_stuff <span class="hljs-type">Social</span></pre>
+<p>You might find some amusing methods to play around with in the output...
+</p>
+<p>Here are some helpers to these methods that are definitely worth sticking in your <code>~/.lldbinit</code> file as well:
+</p><pre class="code-block">command regex ivars 's/(.+)/expression -lobjc -<span class="hljs-type">O</span> -- [%<span class="hljs-number">1</span> _ivarDescription]/'</pre>
+<p>This will dump all the ivars of a inherited <code>NSObject</code> instance.
+</p><pre class="code-block">command regex methods 's/(.+)/expression -lobjc -<span class="hljs-type">O</span> -- [%<span class="hljs-number">1</span> _shortMethodDescription]/'</pre>
+<p>This will dump all the methods implemented by the inherited <code>NSObject</code> instance, or the class of the <code>NSObject</code>.
+</p><pre class="code-block">command regex lmethods 's/(.+)/expression -lobjc -<span class="hljs-type">O</span> -- [%<span class="hljs-number">1</span> _methodDescription]/'</pre>
+<p>This will recursively dump all the methods implemented by the inherited NSObject and recursively continue on to its superclass.
+</p>
+<p>For example, you might choose to inspect an instance of the <code>SLFacebookUpload</code> class like so:
+</p><pre class="code-block">(lldb) ivars [<span class="hljs-type">SLFacebookUpload</span> new]
+&lt;<span class="hljs-type">SLFacebookUpload</span>: <span class="hljs-number">0x600000056320</span>&gt;:
+<span class="hljs-keyword">in</span> <span class="hljs-type">SLFacebookUpload</span>:
+  _uploadID (<span class="hljs-type">NSString</span>*): <span class="hljs-literal">nil</span>
+  _uploadType (long): <span class="hljs-number">0</span>
+  _totalBytes (unsigned long): <span class="hljs-number">0</span>
+  _transferredBytes (unsigned long): <span class="hljs-number">0</span>
+<span class="hljs-keyword">in</span> <span class="hljs-type">NSObject</span>:
+  isa (<span class="hljs-type">Class</span>): <span class="hljs-type">SLFacebookUpload</span> (isa, <span class="hljs-number">0x103914078</span>)</pre>
+<p>Or perhaps you’re just curious about what methods this class implements:
+</p><pre class="code-block">(lldb) methods <span class="hljs-type">SLFacebookUpload</span>
+&lt;<span class="hljs-type">SLFacebookUpload</span>: <span class="hljs-number">0x10f75f078</span>&gt;:
+<span class="hljs-keyword">in</span> <span class="hljs-type">SLFacebookUpload</span>:
+    <span class="hljs-type">Class</span> <span class="hljs-type">Methods</span>:
+        + (<span class="hljs-type">BOOL</span>) supportsSecureCoding; (<span class="hljs-number">0x10f6e3b5b</span>)
+    <span class="hljs-type">Properties</span>:
+        @property (retain, nonatomic) <span class="hljs-type">NSString</span>* uploadID;  (@synthesize uploadID = _uploadID;)
+        ...
+        @property (nonatomic) unsigned long transferredBytes;  (@synthesize transferredBytes = _transferredBytes;)
+    <span class="hljs-type">Instance</span> <span class="hljs-type">Methods</span>:
+        - (id) uploadID; (<span class="hljs-number">0x10f6e3b63</span>)
+        ...
+        - (void) setTotalBytes:(unsigned long)arg1; (<span class="hljs-number">0x10f6e3bd3</span>)
+(<span class="hljs-type">NSObject</span> ...)</pre>
+<p>Or get <i>all</i> the methods available through this class and superclasses:
+</p><pre class="code-block">(lldb) lmethods <span class="hljs-type">SLFacebookUpload</span>
+&lt;<span class="hljs-type">SLFacebookUpload</span>: <span class="hljs-number">0x10f75f078</span>&gt;:
+<span class="hljs-keyword">in</span> <span class="hljs-type">SLFacebookUpload</span>:
+    <span class="hljs-type">Class</span> <span class="hljs-type">Methods</span>:
+        + (<span class="hljs-type">BOOL</span>) supportsSecureCoding; (<span class="hljs-number">0x10f6e3b5b</span>)
+    <span class="hljs-type">Properties</span>:
+        @property (retain, nonatomic) <span class="hljs-type">NSString</span>* uploadID;  (@synthesize uploadID = _uploadID;)
+        ...
+        @property (nonatomic) unsigned long transferredBytes;  (@synthesize transferredBytes = _transferredBytes;)
+    <span class="hljs-type">Instance</span> <span class="hljs-type">Methods</span>:
+        - (id) uploadID; (<span class="hljs-number">0x10f6e3b63</span>)
+        ...
+        - (void) setTotalBytes:(unsigned long)arg1; (<span class="hljs-number">0x10f6e3bd3</span>)
+<span class="hljs-keyword">in</span> <span class="hljs-type">NSObject</span>:
+    <span class="hljs-type">Class</span> <span class="hljs-type">Methods</span>:
+        + (id) <span class="hljs-type">CKSQLiteClassName</span>; (<span class="hljs-number">0x126ecbb5e</span>)
+        ...
+        + (<span class="hljs-type">BOOL</span>) isFault; (<span class="hljs-number">0x10fd08a6d</span>)
+    <span class="hljs-type">Properties</span>:
+        @property (retain, nonatomic) <span class="hljs-type">NSArray</span>* accessibilityCustomRotors;
+        ...
+        @property (readonly, copy) <span class="hljs-type">NSString</span>* debugDescription;
+    <span class="hljs-type">Instance</span> <span class="hljs-type">Methods</span>:
+        - (id) mf_objectWithHighest:(^block)arg1; (<span class="hljs-number">0x126776a76</span>)
+        ...
+        - (<span class="hljs-type">BOOL</span>) isFault; (<span class="hljs-number">0x10fd08a70</span>)</pre>
+<div class="note">
+<p><em>Note</em>: You only explored the frameworks in the public frameworks directory <em>System/Library/Frameworks</em>. There are many other fun frameworks to explore in other subdirectories starting in <em>System/Library</em>.
+</p></div>
+
+<h2 class="segment-chapter">Loading frameworks on an actual iOS device</h2>
+
+<p>If you have a valid iOS developer account, an application you’ve written, and a device, you can do the same thing you did on the simulator but on the device. The only difference is the location of the <em>System/Library</em> path.
+</p>
+<p>If you’re running an app on the simulator, the public frameworks directory will be located at the following location:
+</p><pre class="code-block">/<span class="hljs-type">Applications</span>/<span class="hljs-type">Xcode</span>.app/<span class="hljs-type">Contents</span>/<span class="hljs-type">Developer</span>/<span class="hljs-type">Platforms</span>/iPhoneSimulator.platform/<span class="hljs-type">Developer</span>/<span class="hljs-type">SDKs</span>/iPhoneSimulator.sdk/<span class="hljs-type">System</span>/<span class="hljs-type">Library</span>/<span class="hljs-type">Frameworks</span>/</pre>
+<p>But some super-observant readers might say, “Wait a second, using <code>otool -L</code> on the simulator gave us <em>/System/Library/Frameworks</em> as the absolute path, not that big long path above. What gives?”
+</p>
+<p>Remember how I said <code>dyld</code> searches a specific set of directories for these frameworks? Well, there’s a special simulator-specific version named <code>dyld_sim</code>, which looks up the proper simulator location. This is the correct path where these frameworks reside on an actual iOS device.
+</p>
+<p>So if you’re running on an actual iOS device, the frameworks path will be located at:
+</p><pre class="code-block">/<span class="hljs-type">System</span>/<span class="hljs-type">Library</span>/<span class="hljs-type">Frameworks</span>/</pre>
+<p>But wait, I hear some others say, “What about sandboxing?”
+</p>
+<p>The iOS kernel has different restrictions for different directory locations. In iOS 11 and earlier, the <em>/System/Library/</em> directory is readable by your process!
+</p>
+<p>This makes sense because your process needs to call the appropriate public and private frameworks from within the processes address space.
+</p>
+<p>If the Sandbox restricted reading of these directories, then the app wouldn’t be able to load them in and then the app would fail to launch.
+</p>
+<p>You can try this out by getting Xcode up and running and attached to any one of your iOS applications. While LLDB is attached to an iOS device, try running <code>ls</code> on the root directory:
+</p><pre class="code-block">(lldb) ls /</pre>
+<p>Now try the /System/Library/ directory:
+</p><pre class="code-block">(lldb) ls /System/Library/</pre>
+<p>Some directories will fail to load. This is the kernel saying “Nope!” However, some directories can be dumped.
+</p>
+<p>You have the power to look at live frameworks and dynamically load them inside your app so you can play with and explore them. There are some interesting and powerful frameworks hidden in the <em>/System/Library</em> subdirectories for you to explore on your iOS, tvOS or watchOS device.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>That <em>/System/Library</em> directory is really something. You can spend a lot of time exploring the different contents in that subdirectory. If you have an iOS device, go explore it!
+</p>
+<p>In this chapter you learned how to load and execute frameworks through LLDB. However, you’ve been left somewhat high and dry for figuring out how to develop with dynamically loaded private frameworks in code.
+</p>
+<p>In the next two chapters, you’ll explore loading frameworks at runtime through code using Objective-C’s method swizzling, as well as function interposition, which is a more Swifty-style strategy for changing around methods at runtime.
+</p>
+<p>This is especially useful if you were to pull in a private framework. I think it’s one of the most exciting things about reverse engineering Apple software.
+</p></body></html>

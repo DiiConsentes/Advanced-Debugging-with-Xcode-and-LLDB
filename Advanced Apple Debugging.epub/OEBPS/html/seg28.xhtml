@@ -1,0 +1,328 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 18: Debugging Script Bridging</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 18: Debugging Script Bridging</h1>
+
+<p>You’ve learned the basics of LLDB’s Python script bridging. Now you’re about to embark on the frustrating yet exhilarating world of making full LLDB Python scripts.
+</p>
+<p>As you learn about the classes and methods in the Python lldb module, you’re bound to make false assumptions or simply type incorrect code. <i>In short, you’re going to screw up</i>. Depending on the error, sometimes these scripts fail silently, or they may blow up with an angry <code>stderr</code>.
+</p>
+<p>You need a methodical way to figure out what went wrong in your LLDB script so you don’t pull your hair out. In this chapter, you’ll explore how to inspect your LLDB Python scripts using the Python <code>pdb</code> module, which is used for debugging Python scripts. In addition, you can execute your own “normal” Objective-C, Objective-C++, C or Swift code (or even other languages) within <em>SBDebugger</em>’s (or <em>SBCommandReturnObject</em>’s) <em>HandleCommand</em> method.
+</p>
+<p>In fact, there&apos;s alternative ways to execute non-Python code that you’ll learn about in an upcoming chapter, but for now, you’ll stick to <em>HandleCommand</em> and see how to manage a build time error, or fix a script that produces an incorrect result.
+</p>
+<p>Although it might not seem like it at first, this is the <em>most important</em> chapter in the LLDB Python section, since it will teach you how to explore and debug methods when you’re learning this new Python module. I would have (figuratively?) killed for a chapter like this when I was first learning the <em>Script Bridging</em> module.
+</p>
+<h2 class="segment-chapter">Debugging your debugging scripts with pdb</h2>
+
+<p>Included in the Python distribution on your system is a Python module named <code>pdb</code> you can use to set breakpoints in a Python script, just like you do with LLDB itself! In addition, <code>pdb</code> has other debugging essential features that let you step into, out of, and over code to inspect potential areas of interest.
+</p>
+<p>You’re going to continue using the <em>helloworld.py</em> script in <em>~/lldb</em> from the previous chapter. If you haven’t read that chapter yet, copy the <em>helloworld.py</em> from the <em>starter</em> directory into a directory named <em>lldb</em> inside your home directory.
+</p>
+<p>Either way, you should now have a file at <em>~/lldb/helloworld.py</em>.
+</p>
+<p>Open up <em>helloworld.py</em> and navigate to the <code>your_first_command</code> function, replacing it with the following:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">your_first_command</span><span class="hljs-params">(debugger, command, result, internal_dict)</span>:</span>
+    <span class="hljs-keyword">import</span> pdb; pdb.set_trace()
+    <span class="hljs-keyword">print</span> (<span class="hljs-string">"hello world"</span>)</pre>
+<div class="note">
+<p><em>Note</em>: It’s worth pointing out <code>pdb</code> will not work when you’re debugging Python scripts in Xcode. The Xcode console window will hang once <code>pdb</code> is tracing a script, so you’ll need to do all pdb Python script debugging in a Terminal window.
+</p></div>
+
+<p>Save your changes and open a Terminal window to create a new LLDB session. In Terminal, type:
+</p><pre class="code-block">lldb</pre>
+<p>Next, execute the <code>yay</code> command (which is defined in <code>helloworld.py</code>, remember?) like so:
+</p><pre class="code-block">(lldb) yay woot</pre>
+<p>Execution will stop and you’ll get output similar to the following:
+</p><pre class="code-block">&gt; /Users/derekselander/lldb/helloworld.py(3)your_first_command()
+-&gt; print (&quot;hello world&quot;)
+(Pdb) </pre>
+<p>The LLDB script gave way to <code>pdb</code>. The Python debugger has stopped execution on the <code>print</code> line of code within <code>helloworld.py</code> inside the function <code>your_first_command</code>.
+</p>
+<p>When creating a LLDB command using Python, there are specific parameters expected in the defining Python function. You’ll now explore these parameters, namely <code><em>debugger</em></code>, <code><em>command</em></code>, and <code><em>result</em></code>.
+</p>
+<p>Explore the <code>command</code> argument first, by typing the following into your <code>pdb</code> session:
+</p><pre class="code-block">(Pdb) command</pre>
+<p>This will dump out the commands you supplied to your <code>yay</code> custom LLDB command. This will always come in the form of a <code>str</code>, even if you have multiple arguments or integers as input. Since there’s no logic to handle any commands, the <code>yay</code> command will silently ignore all input. If you typed in <code>yay woot</code> as indicated earlier, only <code>woot</code> would be spat out as the <code>command</code>.
+</p>
+<p>Next up on the parameter exploration list is the <code>result</code> parameter. Type the following into <code>pdb</code>:
+</p><pre class="code-block">(Pdb) result</pre>
+<p>This will dump out something similar to the following:
+</p><pre class="code-block">&lt;lldb.SBCommandReturnObject; proxy of &lt;Swig Object of type &apos;lldb::SBCommandReturnObject *&apos; at 0x110323060&gt; &gt;</pre>
+<p>This is an instance of <code>SBCommandReturnObject</code>, which is a class the lldb module uses to let you indicate if the execution of an LLDB command was successful. In addition, you can append messages that will be displayed when your command finishes.
+</p>
+<p>Type the following into <code>pdb</code>:
+</p><pre class="code-block">(Pdb) result.AppendMessage(&quot;2nd hello world!&quot;)</pre>
+<p>This appends a message which will be shown by LLDB when this command finishes. In this case, once your command finishes executing, <code>2nd hello world!</code> will be displayed. However, your script is still frozen in time thanks to <code>pdb</code>.
+</p>
+<p>Once your LLDB scripts get more complicated, the <code>SBCommandReturnObject</code> will come into play, but for simple LLDB scripts, it’s not really needed. You’ll explore the <code>SBCommandReturnObject</code> command more later in this chapter.
+</p>
+<p>Finally, onto the debugger parameter. Type the following into <code>pdb</code>:
+</p><pre class="code-block">(Pdb) debugger</pre>
+<p>This will dump out another object of class <code>SBDebugger</code>, similar to the following:
+</p><pre class="code-block">&lt;lldb.SBDebugger; proxy of &lt;Swig Object of type &apos;lldb::SBDebugger *&apos; at 0x110067180&gt; &gt;</pre>
+<p>You explored this class briefly in the previous chapter to help create the LLDB <code>yay</code> command. You’ve already learned one of the most useful commands in <code>SBDebugger</code>: <code>HandleCommand</code>.
+</p>
+<p>Resume execution in <code>pdb</code>. Like LLDB, it has logic to handle a <code>c</code> or <code>continue</code> to resume execution.
+</p>
+<p>Type the following into <code>pdb</code>:
+</p><pre class="code-block">(Pdb) c</pre>
+<p>You’ll get the following output:
+</p><pre class="code-block">hello world!
+2nd hello world!</pre>
+<p><code>pdb</code> is great when you need to pause execution in a certain spot to figure out what’s gone wrong. For example, you could have some complicated setup code, and pause in an area where the logic doesn’t seem to be correct.
+</p>
+<p>This is a much more attractive solution than constantly typing <code>script</code> in LLDB to execute one line of Python code at a time.
+</p>
+<h2 class="segment-chapter">pdb’s post mortem debugging</h2>
+
+<p>Now that you&apos;ve a basic understanding of the process of debugging your scripts, it’s time to throw you into the deep end with an actual LLDB script and see if you can fix it using <code>pdb</code>’s post-mortem debugging features.
+</p>
+<p>Depending on the type of error, <code>pdb</code> has an attractive option that lets you explore the problematic stack trace in the event the code you’re running threw an exception. This type of debugging methodology will only work if Python threw an exception; this method will <i>not</i> work if you receive unexpected output but your code executed without errors.
+</p>
+<p>However, if your code has error handling (and as your scripts get more complex, they really should), you can easily hunt down potential errors while building your scripts.
+</p>
+<p>Find the <em>starter</em> folder of the resources for this chapter. Next, copy the <code>findclass.py</code> file over to your default <code>~/lldb</code> directory. Remember, if you’re stubborn and decided to go with a different directory location, you’ll need to adjust accordingly.
+</p>
+<p>Don’t even look at what this code does yet. It’s not going to finish executing as-is, and you’ll use <code>pdb</code> to inspect it after you view the error.
+</p>
+<p>Once the script has been copied to the correct directory, open a Terminal window and launch and attach LLDB to any program which contains Objective-C. You could choose a macOS application or something on the iOS Simulator, or maybe even a watchOS application.
+</p>
+<p>For this example, I’ll attach to the macOS <code>Photos</code> application, but you’re strongly encouraged to attach to a different application. Hey, that’s part of being an explorer!
+</p>
+<p>Make sure the application is alive and running and attach LLDB to it:
+</p><pre class="code-block">lldb -n Photos</pre>
+<p>Once the process has attached, import the new script into LLDB:
+</p><pre class="code-block">(lldb) command script import ~/lldb/findclass.py</pre>
+<p>Provided you placed the script in the correct directory, you should get no output. The script will install quietly.
+</p>
+<p>Figure out what this command does by looking at the documentation, since you haven’t even looked at the source code for it yet. Type the following into LLDB:
+</p><pre class="code-block">(lldb) help findclass</pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block">Syntax: findclass
+
+The `findclass` command will dump all the Objective-C runtime classes it knows about. Alternatively, if you supply an argument for it, it will do a case-sensitive search looking only for the classes that contain the input. 
+
+Usage: findclass  # All Classes
+Usage: findclass UIViewController # Only classes that contain UIViewController in name</pre>
+<p>Cool! Let’s try this command. Try dumping out all classes the Objective-C runtime knows about.
+</p><pre class="code-block">(lldb) findclass</pre>
+<p>You’ll get a rather annoying error assertion similar to the following:
+</p><pre class="code-block">Traceback (most recent call last):
+  File &quot;/Users/derekselander/lldb/findclass.py&quot;, line 40, in findclass
+    raise AssertionError(&quot;Uhoh... something went wrong, can you figure it out? :]&quot;)
+AssertionError: Uhoh... something went wrong, can you figure it out? :]</pre>
+<p>It’s clear the author of this script is horrible at providing decent information into what happened in the AssertionError. Fortunately, it raised an error! You can use <code>pdb</code> to inspect the stack trace at the time the error was thrown.
+</p>
+<p>In LLDB, type the following:
+</p><pre class="code-block">(lldb) script import pdb
+(lldb) findclass
+(lldb) script pdb.pm()</pre>
+<p>This imports <code>pdb</code> into LLDB’s Python context, runs <code>findclass</code> again, then asks <code>pdb</code> to perform a “post mortem”.
+</p>
+<p>LLDB will change to the pdb interface and jump to the line that threw the error.
+</p><pre class="code-block">&gt; /Users/derekselander/lldb/findclass.py(40)findclass()
+-&gt; raise AssertionError(&quot;Uhoh... something went wrong, can you figure it out? :]&quot;)
+(Pdb) </pre>
+<p>From here, you can use <code>pdb</code> as your new BFF to help explore what’s happening.
+</p>
+<p>Speaking of what’s happening, you haven’t even looked at the source code yet! Lets change that. Type the following into <code>pdb</code>:
+</p><pre class="code-block">(Pdb) l 1, 50</pre>
+<p>This will list lines 1, 50 of the <code>findclass.py</code> script.
+</p>
+<p>You have the typical function signature which handles the majority of the logic in these commands:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">findclass</span><span class="hljs-params">(debugger, command, result, internal_dict)</span>:</span></pre>
+<p>Next up in interesting tidbits is a big long string named <code><em>codeString</em></code>, which starts its definition on line 18. It’s a Python multi-line string, which starts with three quotes and finishes with three quotes on line 35. This string is where the meat of this command’s logic lives.
+</p>
+<p>In your <code>pdb</code> session, type the following:
+</p><pre class="code-block">(Pdb) codeString</pre>
+<p>You’ll get some not-so-pretty output, since dumping a Python string includes all newlines.
+</p><pre class="code-block">&apos;\n    @import Foundation;\n    int numClasses;\n    Class * classes = NULL;\n    classes = NULL;\n    numClasses = objc_getClassList(NULL, 0);\n    NSMutableString *returnString = [NSMutableString string];\n    classes = (__unsafe_unretained Class *)malloc(sizeof(Class) * numClasses);\n    numClasses = objc_getClassList(classes, numClasses);\n\n    for (int i = 0; i &lt; numClasses; i++) {\n      Class c = classes[i];\n      [returnString appendFormat:@&quot;%s,&quot;, class_getName(c)];\n    }\n    free(classes);\n    \n    returnString;\n    &apos;</pre>
+<p>Let’s try that again. Use <code>pdb</code> to print out a pretty version of the <code>codeString</code> variable.
+</p><pre class="code-block">(Pdb) print codeString</pre>
+<p>Much better!
+</p><pre class="code-block"><span class="hljs-keyword">@import</span> Foundation;
+<span class="hljs-keyword">int</span> numClasses;
+Class * classes = <span class="hljs-literal">NULL</span>;
+classes = <span class="hljs-literal">NULL</span>;
+numClasses = objc_getClassList(<span class="hljs-literal">NULL</span>, <span class="hljs-number">0</span>);
+<span class="hljs-built_in">NSMutableString</span> *returnString = [<span class="hljs-built_in">NSMutableString</span> string];
+classes = (__<span class="hljs-keyword">unsafe_unretained</span> Class *)malloc(<span class="hljs-keyword">sizeof</span>(Class) * numClasses);
+numClasses = objc_getClassList(classes, numClasses);
+
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i = <span class="hljs-number">0</span>; i &lt; numClasses; i++) {
+  Class c = classes[i];
+  [returnString appendFormat:<span class="hljs-string">@"%s,"</span>, class_getName(c)];
+}
+free(classes);
+
+returnString;    </pre>
+<p>This <code>codeString</code> contains Objective-C code which uses the Objective-C runtime to get all the classes it knows about. The final line of this code, <code>returnString</code>, essentially lets you return the value of <code>returnString</code> back to the Python script. More on that shortly.
+</p>
+<p>Scan for the next interesting part. On line 40, the debugger is currently at a <code>raise</code> call. This is also the line that provided the annoyingly vague message you received from LLDB.
+</p><pre class="code-block">37    res = lldb.SBCommandReturnObject()
+38    debugger.GetCommandInterpreter().HandleCommand(&quot;po &quot; ...
+39    if res.GetError(): 
+40 -&gt;     raise AssertionError(&quot;Uhoh... something went wron...
+41    elif not res.HasResult():
+42        raise AssertionError(&quot;There&apos;s no result. Womp wom...</pre>
+<p>Note the <code>-&gt;</code> on line 40. This indicates where <code>pdb</code> is currently paused.
+</p>
+<p>But wait, <code>res.GetError()</code> looks interesting. Since everything is fair game to explore while <code>pdb</code> has the stack trace, why don’t you explore this error to see if you can actually get some useful info out of this?
+</p><pre class="code-block">(Pdb) print res.GetError()</pre>
+<p>There you go! Depending whether you decided to break on a macOS, iOS, watchOS, or tvOS app, you might get a slightly different count of error messages, but the idea is the same.
+</p><pre class="code-block">error: warning: got name from symbols: classes
+error: &apos;objc_getClassList&apos; has unknown return type; cast the call to its declared return type
+error: &apos;objc_getClassList&apos; has unknown return type; cast the call to its declared return type
+error: &apos;class_getName&apos; has unknown return type; cast the call to its declared return type</pre>
+<p>The problem here is the code within <code>codeString</code> is causing LLDB some confusion. This sort of error is very common in LLDB. You often need to tell LLDB the return type of a function, because it doesn’t know what it is. In this case, both <code>objc_getClassList</code> and <code>class_getName</code> have unknown return types.
+</p>
+<p>A quick consultation with Google tells us the two problematic methods in question have the following signatures:
+</p><pre class="code-block"><span class="hljs-keyword">int</span> objc_getClassList(Class *buffer, <span class="hljs-keyword">int</span> bufferCount);
+<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> * class_getName(Class cls);</pre>
+<p>All you need to do is cast the return type to the correct value in the <code>codeString</code> code.
+</p>
+<p>Open up <code>~/lldb/findclass.py</code> and replace the definition of <code>codeString</code> with the following:
+</p><pre class="code-block">codeString = r<span class="hljs-string">'''</span>
+<span class="hljs-keyword">@import</span> Foundation;
+<span class="hljs-keyword">int</span> numClasses;
+Class * classes = <span class="hljs-literal">NULL</span>;
+classes = <span class="hljs-literal">NULL</span>;
+numClasses = (<span class="hljs-keyword">int</span>)objc_getClassList(<span class="hljs-literal">NULL</span>, <span class="hljs-number">0</span>);
+<span class="hljs-built_in">NSMutableString</span> *returnString = [<span class="hljs-built_in">NSMutableString</span> string];
+classes = (__<span class="hljs-keyword">unsafe_unretained</span> Class *)malloc(<span class="hljs-keyword">sizeof</span>(Class) * numClasses);
+numClasses = (<span class="hljs-keyword">int</span>)objc_getClassList(classes, numClasses);
+
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i = <span class="hljs-number">0</span>; i &lt; numClasses; i++) {
+  Class c = classes[i];
+  [returnString appendFormat:<span class="hljs-string">@"%s,"</span>, (<span class="hljs-keyword">char</span> *)class_getName(c)];
+}
+free(classes);
+
+returnString;
+<span class="hljs-string">'''</span></pre>
+<p>Save your work and jump back to your LLDB Terminal window. You’ll still be inside <code>pdb</code>, so type <code>Ctrl + D</code> to exit. Next, type the following:
+</p><pre class="code-block">(lldb) command script import ~/lldb/findclass.py</pre>
+<p>This will reload the script into LLDB with the new changes in the source code. This is required if you make any changes to the source code and you want to test out the command again without having to restart LLDB.
+</p>
+<p>Try your luck again and dump all of the Objective-C classes available in your process.
+</p><pre class="code-block">(lldb) findclass</pre>
+<p>Boom! You’ll get a slew of output containing all the Objective-C classes in your program. From your app, from <code>Foundation</code>, from <code>CoreFoundation</code>, and so on. Heh... there’s more than you thought there would be, right?
+</p>
+<p>Try limiting your query to something slightly more manageable. Search for all classes containing the word <code>ViewController</code>:
+</p><pre class="code-block">(lldb) findclass ViewController</pre>
+<p>Depending on the process you’ve attached to, you’ll get a different amount of classes containing the name ViewController.
+</p>
+<p>When developing commands using the Python script bridging, <code>pdb</code> is a superb tool to keep in your toolbox to help you understand what is happening. It works well for inspecting complicated sections and breaking on problematic areas in your Python script.
+</p>
+<h2 class="segment-chapter">expression’s Debug Option</h2>
+
+<p>As you saw in Chapter 5, “Expression”, LLDB’s <code>expression</code> command has a slew of options available for when LLDB is evaluating code provided to this command. One of these options, overlooked until now, is the <code><em>--debug</em></code> option, or more simply <code><em>-g</em></code>.
+</p>
+<p>If you supply this option to <code>expression</code>, LLDB will evaluate the expression, but the expression will be written to a file and control will stop as soon as execution hits your command.
+</p>
+<p>Confused? Maybe it would be better to see this option in action.
+</p>
+<p>Jump back to your <em>findclass.py</em> file and jump to line 38, which contains the following line of code:
+</p><pre class="code-block">debugger.GetCommandInterpreter().HandleCommand(<span class="hljs-string">"expression -lobjc -O -- "</span> + codeString, res)</pre>
+<p>In the options section of the <code>expression</code> command, add the <code>-g</code> option so it now looks like the following:
+</p><pre class="code-block">debugger.GetCommandInterpreter().HandleCommand(<span class="hljs-string">"expression -lobjc -g -O -- "</span> + codeString, res)</pre>
+<p>Save your work in <em>findclass.py</em> and reload your script through LLDB:
+</p><pre class="code-block">(lldb) command script import ~/lldb/findclass.py</pre>
+<p>Once reloaded, give <code>findclass</code> a spin:
+</p><pre class="code-block">(lldb) findclass</pre>
+<p>Execution will now stop in a method created by the JIT (just in time) compiler and let you debug the code yourself in LLDB!
+</p><div class="image-90"><img src="graphics/img94.png"  alt="" title="" /></div>
+<div class="note">
+<p><em>Note</em>: This script will raise an error because the <code>--debug</code> option was turned on. If you were to use pdb to inspect the <code>res.GetError()</code>, you’ll find that it contains the following message: <i>Execution was halted at the first instruction of the expression function because &quot;debug&quot; was requested...</i> This is OK and not part of an error you should worry about since you&apos;re debugging your own expression. It’s worth noting that you&apos;ll not get a return value from this script since it errored out.
+</p></div>
+
+<p>Now you can inspect, step, and even augment parameters just like you would any LLDB expression.
+</p>
+<p>Since you&apos;re in the Terminal window, you&apos;ll need to inspect the source code using the <code><em>source list</em></code>, or more conveniently, the <code><em>list</em></code> or <code><em>l</em></code> LLDB command.
+</p>
+<p>In LLDB, type the following:
+</p><pre class="code-block">(lldb) l</pre>
+<p>This will list the current line and slowly move down through the source file. Repeat to view the next set of lines.
+</p><pre class="code-block">(lldb) l</pre>
+<p>If you were to keep executing the same command, it would eventually cover all the source lines available and produce no more output.
+</p>
+<p>Another solution to viewing and stepping through source code while in a LLDB Terminal window is to use the <code><em>gui</em></code> LLDB command. This recently-added command in LLDB will transform your Terminal window into a <code>curses</code>-style GUI.
+</p>
+<p>Type the following to jump into the LLDB GUI window:
+</p><pre class="code-block">(lldb) gui</pre><div class="image-90"><img src="graphics/img95.png"  alt="" title="" /></div>
+<p>From here, you can step through code using the <em>N</em> key, or step into code using <em>S</em>. Once you’re at a location of interest, you can exit out of the LLDB GUI by typing <code>Fn + F1</code> (or just <code>F1</code> if you don’t have the standard function keys enabled) to bring up the LLDB menu.
+</p>
+<p>From there,  press <em>X</em> to E<em>x</em>it out of the LLDB GUI and back into your console to print out/modify or alter control.
+</p>
+<p>Using the <code>--debug</code> option is a great way to hunt for logic that returns unexpected results in your script that is running “actual” code — that is, JIT code — inside the process.
+</p>
+<p>For example, if your script gave you unexpected results, I would get rid of all pdb instances, add the <code>-g</code> option to a <code>expression</code> command executed by <code>HandleCommand</code> and then execute the custom command I was working on. From there, I would use the LLDB console (through Terminal or through Xcode... which is a far better way to view the source code) and then hunt for the reason why my JIT code isn’t returning the expected results.
+</p>
+<div class="note">
+<p><em>Note</em>: It’s worth noting I have occasionally experienced errors when using <code>po</code> LLDB command while exploring contents inside a paused JIT function created with the <code>-g</code> option. If that&apos;s the case, I&apos;ll fall back to using the <em>frame variable</em> command to explore the parameters of interest. Check out Chapter 6, “Thread, Frame &amp; Stepping Around” to learn more about the <code>frame</code> LLDB command.
+</p></div>
+
+<p>Once you’re satisfied with exploring the <code>--debug</code> option, remove the <code>-g</code> option for your Python script.
+</p>
+<h2 class="segment-chapter">How to handle problems</h2>
+
+<p>As I alluded to in the introduction to this chapter, you&apos;re going to run into problems when building these scripts. Let’s recap what options you have, depending on the type of problem you encounter when building out these scripts.
+</p>
+<p>Typically, you should perform iterative development on a Python script, save, then reload your script while LLDB is attached to a process and the process is still running.
+</p>
+<h3 class="segment-chapter">Python build errors</h3>
+
+<p>When reloading your script, you might encounter something like this:
+</p><div class="image-90"><img src="graphics/img96.png"  alt="" title="" /></div>
+<p>This is an example of a build error that occurred when I was creating my script. This command will not successfully load since there are Python syntax errors in it.
+</p>
+<p>This is the most straightforward type of problem, because reloading the script will show me the error. I can tell that on line 37, I have unmatched indentation in the <code>findclass</code> Python script.
+</p>
+<h3 class="segment-chapter">Python runtime errors or unexpected values</h3>
+
+<p>What if your Python script loads just fine, and you don’t get any build errors to the console when reloading — but you receive unexpected output, or your script crashes and you need to further inspect what’s happening?
+</p>
+<p>Now, you can use the Python <code>pdb</code> module. Go to your Python script (in this case, <em>findclass.py</em>) and add the following line of code right before you expect the problem to occur:
+</p><pre class="code-block"><span class="hljs-keyword">import</span> pdb; pdb.set_trace()</pre>
+<p>Jump over to Terminal (again, <code>pdb</code> will freeze Xcode, so Terminal is your only option for <code>pdb</code>) and attach to a process with LLDB, then try your command again.
+</p>
+<p>From there, execution will eventually freeze and hit your <code>pdb</code>-triggered breakpoint, where you can inspect parameters and step through the flow of execution.
+</p><div class="image-90"><img src="graphics/img97.png"  alt="" title="" /></div>
+<h3 class="segment-chapter">JIT code build errors</h3>
+
+<p>Often, you’re executing actual code inside the process and then return the value back to your Python script. Again, this will be referred to as <i>JIT code</i> throughout the remainder of the book.
+</p>
+<p>Imagine the following: you’re executing a long batch of JIT code, and when running the JIT code in a <code>HandleCommand</code> method from the LLDB Python module you get an error saying something is not working.
+</p>
+<p>This is one of the more annoying aspects with working with these scripts, since the debugger won’t give you line information along with the error. If you can’t uniquely identify where the error could have originated, you&apos;ll need to systematically comment out areas of your code until <code>HandleCommand</code> produces no errors for the JIT code.
+</p>
+<p>From there, you can hone in on any locations giving you problems, and fix them.
+</p>
+<h3 class="segment-chapter">JIT code with unexpected results</h3>
+
+<p>The final types of errors you could encounter are unexpected results from your JIT code. For example, in the <code>findclass.py</code> script, what if you didn’t get an expected class? What if you get more hits than you would have expected, searching for a particular query?
+</p>
+<p>This is when that <code>--debug</code> option from the LLDB <code>expression</code> command comes in handy. Hunt down the method for <code>SBDebugger</code>’s or <code>SBCommandReturnObject</code>’s <code>HandleCommand</code> and add the <code>-g</code> option when the <code>expression</code> command is being used.
+</p><pre class="code-block">debugger.GetCommandInterpreter().HandleCommand(<span class="hljs-string">"expression -lobjc -O -g -- "</span> + codeString, res)</pre>
+<p>Reload your script, then execute the command.
+</p><div class="image-90"><img src="graphics/img98.png"  alt="" title="" /></div>
+<p>Control will stop on the JIT code and let you inspect it to determine what went wrong. If you do this in Xcode, you have all the conveniences of your hotkeys while viewing the source code to let you inspect and step over execution to hunt down the problem.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>You’re now equipped to tackle the toughest debugging problems while making your own custom scripts!
+</p>
+<p>There’s a lot more you can do with <code>pdb</code> than what I described here. Check out <a href="https://docs.python.org/2.7/library/pdb.html">https://docs.python.org/2.7/library/pdb.html</a> and read up on the other cool features of <code>pdb</code>. Be sure to remember that the version of <code>pdb</code> must match the version of Python that LLDB is using.
+</p>
+<p>While you’re at it, now’s the time to start exploring other Python modules to see what other cool features they have. Not only do you have the lldb Python module, but you also have the full power of Python to use when creating advanced debugging scripts.
+</p></body></html>

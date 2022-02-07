@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 6: Thread, Frame &amp; Stepping Around</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 6: Thread, Frame &amp; Stepping Around</h1>
+
+<p>You’ve learned how to create breakpoints, how to print and modify values, as well as how to execute code while paused in the debugger. But so far, you’ve been left high and dry on how to move around in the debugger and inspect data beyond the immediate. It’s time to fix that!
+</p>
+<p>In this chapter, you’ll learn how to move the debugger in and out of functions while LLDB is currently paused.
+</p>
+<p>This is a critical skill to have since you often want to inspect values as they change over time when entering or exiting snippets of code.
+</p>
+<h2 class="segment-chapter">Stack 101</h2>
+
+<p>When a computer program executes, it stores values in the <em>stack</em> and the <em>heap</em>. Both have their merits. As an advanced debugger, you’ll need to have a good understanding of how these work. Right now, let’s take a brief look at the stack.
+</p>
+<p>You may already know the whole spiel about what a stack is in computer science terms. In any case, it’s worth having a basic understanding (or refresher) of how a process keeps track of code and variables when executing. This knowledge will come in handy as you’re using LLDB to navigate around code.
+</p>
+<p>The stack is a LIFO (Last-In-First-Out) queue that stores references to your currently executing code. This LIFO ordering means that whatever is added most recently, is removed first. Think of a stack of plates. Add a plate to the top, and it will be the one you take off first.
+</p>
+<p>The <em>stack pointer</em> points to the current top of the stack. In the plate analogy, the stack pointer points to that top plate, telling you where to take the next plate from, or where to put the next plate on.
+</p><div class="image-50"><img src="graphics/img19.png"  alt="" title="" /></div>
+<p>In this diagram, the high address is shown at the top (0xFFFFFFFF) and the low address is shown at the bottom (0x00000000) showcasing the stack would grow downwards.
+</p>
+<p>Some illustrations like to have the high address at the bottom to match with the plate analogy as the stack would be shown growing upwards. However, I believe any diagrams showcasing the stack should be shown growing downwards from a high address because this will cause less headaches later on when talking about offsets from the stack pointer.
+</p>
+<p>You’ll take an in depth look at the stack pointer and other registers in Chapter 12, “Assembly and the Stack”, but in this chapter you’ll explore various ways to step through code that is on the stack.
+</p>
+<h2 class="segment-chapter">Examining the stack’s frames</h2>
+
+<p>You’ll continue to use the <em>Signals</em> project for this chapter.
+</p>
+<p>You’ll glimpse some assembly in this chapter. Don’t get scared! It’s not that bad. However, be sure to use the iPhone X Simulator for this chapter since the assembly will be different if you were to generate the code on say, an actual iOS device. This is because a device uses the ARM architecture, whereas the simulator uses your Mac’s native instruction set, x86_64 (or i386 if you are compiling on something lower than the iPhone 5s Simulator).
+</p>
+<p>Open the Signals project in Xcode. Next, add a symbolic breakpoint with the following function name. Be sure to honor the spaces in the function signature or else the breakpoint will not be recognized.
+</p><pre class="code-block">Signals.MasterViewController.viewWillAppear(Swift.Bool) -&gt; ()</pre>
+<p>This creates a symbolic breakpoint on <code>MasterViewController</code>’s <code>viewWillAppear(_:)</code> method.
+</p><div class="image-60"><img src="graphics/img20.png"  alt="" title="" /></div>
+<p>Build and run the program. As expected, the debugger will pause the program on the <code>viewWillAppear(_:)</code> method of <code>MasterViewController</code>. Next, take a look at the stack trace in the left panel of Xcode. If you don’t see it already, click on the <em>Debug Navigator</em> in the left panel (alternatively, press <em>Command + 7</em>, if you have the default Xcode keymap).
+</p>
+<p>Make sure the three buttons in the bottom right corner are all disabled. These help filter stack functions to only functions you have source code for. Since you’re learning about public as well as private code, you should always have these buttons disabled so you can see the full stack trace.
+</p><div class="image-90"><img src="graphics/img21.png"  alt="" title="" /></div>
+<p>Within the Debug Navigator panel, the <em>stack trace</em> will appear, showing the list of <em>stack frames</em>, the first one being <code>viewWillAppear(_:)</code>. Following that is the Swift/Objective-C bridging method, <code>@objc MasterViewController.viewWillAppear(Bool) -&gt; ():</code>. This method is automatically generated so Objective-C can reach into Swift code.
+</p>
+<p>After that, there’s a few stack frames of Objective-C code coming from <code>UIKit</code>. Dig a little deeper, and you’ll see some <code>C++</code> code belonging to <code>CoreAnimation</code>. Even deeper, you’ll see a couple of methods all containing the name <code>CFRunLoop</code> that belong to <code>CoreFoundation</code>. Finally, to cap it all off, is the <code><em>main</em></code> function (yes, Swift programs still have a <code>main</code> function, it’s just hidden from you).
+</p>
+<p>The stack trace you see in Xcode is simply a pretty printed version of what LLDB can tell you. Let’s see that now.
+</p>
+<p>In the LLDB console, type the following:
+</p><pre class="code-block">(lldb) thread backtrace</pre>
+<p>You could also simply type <code>bt</code> if you wished, which does the same. It’s actually a different command and you can see the difference if you pull out your trusty friend, <code>help</code>.
+</p>
+<p>After the command above, you’ll see a stack trace much like you see in Xcode’s Debug Navigator.
+</p>
+<p>Type the following into LLDB:
+</p><pre class="code-block">(lldb) frame info</pre>
+<p>You’ll get a bit of output similar to the following:
+</p><pre class="code-block">frame #0: 0x000000010ba1f8dc Signals`MasterViewController.viewWillAppear(animated=false, self=0x00007fd286c0af10) at MasterViewController.swift:50</pre>
+<p>As you can see, this output matches the content found in the Debug Navigator. So why is this even important if you can just see everything from the Debug Navigator? Well, using the LLDB console gives you finer-grained control of what information you want to see. In addition, you’ll be making custom LLDB scripts in which these commands will become very useful. It’s also nice to know where Xcode gets its information from, right?
+</p>
+<p>Taking a look back at the Debug Navigator, you’ll see some numbers starting from 0 and incrementing as you go down the <em>call stack</em>. This numbering helps you associate which <em>stack frame</em> you’re looking at. Select a different stack by typing the following:
+</p><pre class="code-block">(lldb) frame select 1</pre>
+<p>Xcode will jump to the <code>@objc</code> bridging method, the method located at index 1 in the stack. What&apos;s an <code>@objc</code> bridging method? It&apos;s a method that&apos;s generated by the Swift compiler to interact with Objective-C&apos;s dynamic nature. In earlier versions of Swift (Swift &lt;= 3.2) any <code>NSObject</code> implied <code>@objc</code> bridging methods being generated. With the default build settings in Swift 4, even an Objective-C NSObject needs to have <code>@objc</code> (or <code>@objcMembers</code>) attribute for the Swift compiler to generate the bridging methods.
+</p>
+<p>Provided you’re using the Simulator and not an actual device, you’ll get some assembly looking similar to the following.
+</p><div class="image-80"><img src="graphics/img22.png"  alt="" title="" /></div>
+<p>Take note of the green line in the assembly. Right before that line is the <code><em>callq</em></code> instruction that is responsible for executing <code>viewWillAppear(_:)</code> you set a breakpoint on earlier.
+</p>
+<p>Don’t let the assembly blur your eyes too much. You’re not out of the assembly woods just yet...
+</p>
+<h2 class="segment-chapter">Stepping</h2>
+
+<p>When mastering LLDB, the three most important navigation actions you can do while the program is paused revolve around <em>stepping</em> through a program. Through LLDB, you can <em>step over</em>, <em>step in</em>, or <em>step out</em> of code.
+</p>
+<p>Each of these allow you to continue executing your program’s code, but in small chunks to allow you to examine how the program is executing.
+</p>
+<h3 class="segment-chapter">Stepping over</h3>
+
+<p>Stepping over allows you to step to the next code statement (usually, the next line) in the context where the debugger is currently paused. This means if the current statement is calling another function, LLDB will run until this function has completed and returned.
+</p>
+<p>Let’s see this in action.
+</p>
+<p>Type the following in the LLDB console:
+</p><pre class="code-block">(lldb) run</pre>
+<p>This will relaunch the Signals program without Xcode having to recompile. Neat! Xcode will stop on your symbolic breakpoint as before.
+</p>
+<p>Next, type the following:
+</p><pre class="code-block">(lldb) next</pre>
+<p>The debugger will move one line forward. This is how you step over. Simple, but useful!
+</p>
+<h3 class="segment-chapter">Stepping in</h3>
+
+<p>Stepping in means if the next statement is a function call, the debugger will move into the start of that function and then pause again.
+</p>
+<p>Let’s see this in action.
+</p>
+<p>Relaunch the Breakpoints program from LLDB:
+</p><pre class="code-block">(lldb) run</pre>
+<p>Next, type the following:
+</p><pre class="code-block">(lldb) step</pre>
+<p>No luck. The program should’ve stepped in, because the line it’s on contains a function call (well, actually it contains a few!).
+</p>
+<p>In this case, LLDB acted more like a “step over” instead of a “step into”. This is because LLDB will, by default, ignore stepping into a function if there are no debug symbols for that function. In this case, the function calls are all going into UIKit, for which you don’t have debug symbols.
+</p>
+<p>There is, however, a setting that specifies how LLDB should behave when stepping into a function for which no debug symbols exist. Execute the following command in LLDB to see where this setting is held:
+</p><pre class="code-block">(lldb) settings show target.process.thread.step-in-avoid-nodebug</pre>
+<p>If true, then stepping in will act as a step over in these instances. You can either change this setting (which you’ll do in the future), or tell the debugger to ignore the setting, which you’ll do now.
+</p>
+<p>Type the following into LLDB:
+</p><pre class="code-block">(lldb) step -a0 </pre>
+<p>This tells LLDB to step in regardless of whether you have the required debug symbols or not.
+</p>
+<h3 class="segment-chapter">Stepping out</h3>
+
+<p>Stepping out means a function will continue for its duration then stop when it has returned. From a stack viewpoint, execution continues until the stack frame is popped off.
+</p>
+<p>Run the Signals project again, and this time when the debugger pauses, take a quick look at the stack trace. Next, type the following into LLDB:
+</p><pre class="code-block">(lldb) finish</pre>
+<p>You’ll notice that the debugger is now paused one function up in the stack trace. Try executing this command a few more times. Remember, by simply pressing <em>Enter</em>, LLDB will execute the last command you typed. The <code>finish</code> command will instruct LLDB to step out of the current function. Pay attention to the stack frames in the left panel as they disappear one by one.
+</p>
+<h3 class="segment-chapter">Stepping in the Xcode GUI</h3>
+
+<p>Although you get much more finer-grained control using the console, Xcode already provides these options for you as buttons just above the LLDB console. These buttons appear when an application is running.
+</p><div class="image-80"><img src="graphics/img23.png"  alt="" title="" /></div>
+<p>They appear, in order, as <em>step over</em>, <em>step in</em>, and <em>step out</em>.
+</p>
+<p>Finally, the step over and step in buttons have one more cool trick. You can manually control the execution of different threads, by holding down <em>Control</em> and <em>Shift</em> while clicking on these buttons.
+</p>
+<p>This will result in stepping through the thread on which the debugger is paused, while the rest of the threads remain paused. This is a great trick to have in the back of your toolbox if you are working with some hard-to-debug concurrency code like networking or something with Grand Central Dispatch.
+</p>
+<p>Of course LLDB has the command line equivalent to do the same from the console by using the <code>--run-mode</code> option, or more simply <code>-m</code> followed by the appropriate option.
+</p>
+<h2 class="segment-chapter">Examining data in the stack</h2>
+
+<p>A very interesting option of the <code>frame</code> command is the <code><em>frame variable</em></code> subcommand. This command will take the debug symbol information found in the headers of your executable (or a dYSM if your app is stripped... more on that later) and dump information out for that particular stack frame. Thanks to the debug information, the <code>frame variable</code> command can easily tell you the scope of all the variables in your function as well as any global variables within your program using the appropriate options.
+</p>
+<p>Run the Signals project again and make sure you hit the <code>viewWillAppear(_:)</code> breakpoint. Next, navigate to the top of the stack by either clicking on the top stack frame in Xcode’s Debug Navigator or by entering <code><em>frame select 0</em></code> in the console, or use LLDB&apos;s shorthand command <em>f 0</em>.
+</p>
+<p>Next, type the following:
+</p><pre class="code-block">(lldb) frame variable</pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block">(Bool) animated = false
+(Signals.MasterViewController) self = 0x00007fb3d160aad0 {
+  UIKit.UITableViewController = {
+    baseUIViewController@0 = &lt;extracting data from value failed&gt;
+
+    _tableViewStyle = 0
+    _keyboardSupport = nil
+    _staticDataSource = nil
+    _filteredDataSource = 0x000061800005f0b0
+    _filteredDataType = 0
+  }
+  detailViewController = nil
+}</pre>
+<p>This dumps the variables available to the current stack frame and line of code. If possible, it’ll also dump all the instance variables, both public and private, from the current available variables.
+</p>
+<p>You, being the observant reader you are, might notice the output of <code>frame variable</code> also matches the content found in the <em>Variables View</em>, the panel to the left of the console window.
+</p>
+<p>If it’s not already, expand the Variables View by clicking on the left icon in the lower right corner of Xcode. You can compare the output of <code>frame variable</code> to the Variables View. You might notice <code>frame variable</code> will actually give you more information about the ivars of Apple’s private API than the Variables View will.
+</p><div class="image-80"><img src="graphics/img24.png"  alt="" title="" /></div>
+<p>Next, type the following:
+</p><pre class="code-block">(lldb) frame variable -F self </pre>
+<p>This is an easier way to look at all the private variables available to MasterViewController. It uses the <code>-F</code> option, which stands for “flat”.
+</p>
+<p>This will keep the indentation to 0 and only print out information about <code>self</code>, in <em>MasterViewController.swift</em>.
+</p>
+<p>You’ll get output similar to the truncated output below:
+</p><pre class="code-block">self = 0x00007fff5540eb40
+self =
+self =
+self =
+self = {}
+self.detailViewController = 0x00007fc728816e00
+self.detailViewController.some =
+self.detailViewController.some =
+self.detailViewController.some = {}
+self.detailViewController.some.signal = 0x00007fc728509de0</pre>
+<p>As you can see, this is an attractive way to explore public variables when working with Apple’s frameworks.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>In this chapter, you’ve explored stack frames and the content in them. You’ve also learned how to navigate the stack by stepping in, out, and over code.
+</p>
+<p>There are a lot of options in the <code>thread</code> command you didn’t cover. Try exploring some of them with the <code>help thread</code> command, and seeing if you can learn some cool options.
+</p>
+<p>Take a look at the <code>thread until</code>, <code>thread jump</code>, and <code>thread return</code> subcommands. You’ll use them later, but they are fun commands so give them a shot now to see what they do!
+</p></body></html>

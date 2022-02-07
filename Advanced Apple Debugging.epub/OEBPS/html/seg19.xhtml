@@ -1,0 +1,346 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 11: Assembly &amp; Memory</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 11: Assembly &amp; Memory</h1>
+
+<p>You’ve begun the journey and learned the dark arts of the x64 calling convention in the previous chapter. When a function is called, you now know how parameters are passed to functions, and how function return values come back. What you haven’t learned yet is how code is executed when it’s loaded into memory.
+</p>
+<p>In this chapter, you’ll explore how a program executes. You’ll look at a special register used to tell the processor where it should read the next instruction from, as well as how different sizes and groupings of memory can produce <i>very</i> different results.
+</p>
+<h2 class="segment-chapter">Setting up the Intel-Flavored Assembly Experience™</h2>
+
+<p>As mentioned in the previous chapter, there are two main ways to display assembly. One type, <em>AT</em><em>&amp;</em><em>T</em> assembly, is the default assembly set for LLDB. This flavor has the following format:
+</p><pre class="code-block">opcode  source  destination</pre>
+<p>Take a look at a concrete example:
+</p><pre class="code-block">movq  $0x78, %rax</pre>
+<p>This will move the hexadecimal value <code>0x78</code> into the <code>RAX</code> register. Although this assembly flavor is nice for some, you’ll use the <em>Intel</em> flavor instead from here on out.
+</p>
+<div class="note">
+<p><em>Note</em>: The choice of assembly flavor is somewhat of a flame war — check out this discussion in StackOverflow: <a href="https://stackoverflow.com/questions/972602/att-vs-intel-syntax-and-limitations">https://stackoverflow.com/questions/972602/att-vs-intel-syntax-and-limitations</a>.
+</p>
+<p>The choice to use Intel was based on the admittedly loose consensus that Intel is better for reading, but at times, worse for writing. Since you’re learning about debugging, the majority of time you’ll be reading assembly as opposed to writing it.
+</p></div>
+
+<p>Add the following lines to the bottom of your <em>~/.lldbinit</em> file:
+</p><pre class="code-block">settings set target.x86-disassembly-flavor intel
+settings set target.skip-prologue false</pre>
+<p>The first line tells LLDB to display x86 assembly (both 32-bit and 64-bit) in the Intel flavor.
+</p>
+<p>The second line tells LLDB to not skip the function prologue. You came across this earlier in this book, and from now on it’s prudent to not skip the prologue since you’ll be inspecting assembly right from the first instruction in a function.
+</p>
+<div class="note">
+<p><em>Note</em>: When editing your <em>~/.lldbinit</em> file, make sure you don’t use a program like TextEdit for this, as it will add unnecessary characters into the file that could result in LLDB not correctly parsing the file. An easy (although dangerous) way to add this is through a Terminal command like so: <code>echo &quot;settings set target.x86-disassembly-flavor intel&quot; &gt;&gt; ~/.lldbinit</code>.
+</p>
+<p>Make sure you have two &apos;<code>&gt;&gt;</code>&apos; in there or else you’ll overwrite all your previous content in your <em>~/.lldbinit</em> file. If you’re not comfortable with the Terminal, editors like <code>nano</code> (which you’ve used earlier) are your best bet.
+</p></div>
+
+<p>The Intel flavor will swap the source and destination values, remove the &apos;<code>%</code>&apos; and &apos;<code>$</code>&apos; characters as well as do many, many other changes. Since you’ll not use the AT&amp;T syntax, it’s better to not explain the full differences between the two assembly flavors, and instead just learn the Intel format.
+</p>
+<p>Take a look at the previous example, now shown in the Intel flavor and see how much cleaner it looks:
+</p><pre class="code-block">mov  rax, 0x78</pre>
+<p>Again, this will move the hexadecimal value <code>0x78</code>  into the <code>RAX</code> register.
+</p>
+<p>Compared to the AT&amp;T flavor shown earlier, the Intel flavor swaps the source and destination operands. The destination operand now precedes the source operand. When working with assembly, it’s important you always identify the correct flavor, since you could expect a different action to occur if you’re not clear which flavor you’re working with.
+</p>
+<p>From here on out, the Intel flavor will be the path forward. If you ever see a numeric hexadecimal constant that begins with a <code>$</code> character, or a register that begins with <code>%</code>, know that you’re in the wrong assembly flavor and should change it using the process described above.
+</p>
+<h3 class="segment-chapter">Creating the cpx command</h3>
+
+<p>First of all, you’re going to create your own LLDB command to help later on.
+</p>
+<p>Open <code>~/.lldbinit</code> again in your favorite text editor (vim, right?). Then add the following to the bottom of the file:
+</p><pre class="code-block">command alias -H &quot;Print value in ObjC context in hexadecimal&quot; -h &quot;Print in hex&quot; -- cpx expression -f x -l objc -- </pre>
+<p>This command, <code><em>cpx</em></code>, is a convenience command you can use to print out something in hexadecimal format, using the Objective-C context. This will be useful when printing out register contents.
+</p>
+<p>Remember, registers aren’t available in the Swift context, so you need to use the Objective-C context instead.
+</p>
+<p>Now you have the tools needed to explore memory in this chapter through an assembly point of view!
+</p>
+<h3 class="segment-chapter">Bits, bytes, and other terminology</h3>
+
+<p>Before you begin exploring memory, you need to be aware of some vocabulary about how memory is grouped.
+</p>
+<p>A value that can contain either a 1 or a 0 is known as a <em>bit</em>. You can say there are 64 bits per address in a 64-bit architecture. Simple enough.
+</p>
+<p>When there are 8 bits grouped together, they’re known as a <em>byte</em>. How many unique values can a byte hold? You can determine that by calculating 2^8 which will be 256 values, starting from 0 and going to 255.
+</p>
+<p>Lots of information is expressed in bytes. For example, the C <code>sizeof()</code> function returns the size of the object in bytes.
+</p>
+<p>If you&apos;re familiar with ASCII character encoding, you’ll recall all ASCII characters can be held in a single byte.
+</p>
+<p>It’s time to take a look at this terminology in action and learn some tricks along the way.
+</p>
+<p>Open up the <em>Registers</em> macOS application, which you’ll find in the resources folder for this chapter. Next, build and run the app. Once it’s running, pause the program and bring up the LLDB console. This will result in the non-Swift debugging context being used since pausing the application out of the blue will bring the non-Swift context by default.
+</p>
+<p>Type the following in LLDB:
+</p><pre class="code-block">(lldb) p sizeof(&apos;A&apos;)</pre>
+<p>This will print out the number of bytes required to make up the &apos;A&apos; character:
+</p><pre class="code-block">(unsigned long) $0 = 1</pre>
+<p>Next, type the following:
+</p><pre class="code-block">(lldb) p/t &apos;A&apos;</pre>
+<p>You’ll get the following output:
+</p><pre class="code-block">(char) $1 = 0b01000001</pre>
+<p>This is the binary representation for the character <code>A</code> in ASCII.
+</p>
+<p>Another more common way to display a byte of information is using hexadecimal values. Two hexadecimal digits are required to represent a byte of information in hexadecimal.
+</p>
+<p>Print out the hexadecimal representation of &apos;A&apos;:
+</p><pre class="code-block">(lldb) p/x &apos;A&apos;</pre>
+<p>You’ll get the following output:
+</p><pre class="code-block">(char) $2 = 0x41</pre>
+<p>Hexadecimal is great for viewing memory because a single hexadecimal digit represents exactly 4 bits. So if you have 2 hexadecimal digits, you have 1 byte. If you have 8 hexadecimal digits, you have 4 bytes. And so on.
+</p>
+<p>Here are a few more terms for you that you’ll find useful in the chapters to come:
+</p>
+<ul>
+<li>
+<p><em>Nybble</em>: 4 bits, a single value in hexadecimal
+</p></li>
+
+<li>
+<p><em>Half word</em>: 16 bits, or 2 bytes
+</p></li>
+
+<li>
+<p><em>Word</em>: 32 bits, or 4 bytes
+</p></li>
+
+<li>
+<p><em>Double word</em> or <em>Giant word</em>: 64 bits or 8 bytes.
+</p></li>
+</ul>
+
+<p>With this terminology, you’re all set to explore the different memory chunks.
+</p>
+<h2 class="segment-chapter">The RIP register</h2>
+
+<p>Ah, the exact register to put on your gravestone.
+</p>
+<p>When a program executes, code to be executed is loaded into memory. The location of which code to execute next in the program is determined by one magically important register: the <code><em>RIP</em></code> or <em>instruction pointer</em> register.
+</p>
+<p>Let’s take a look at that in action. Open the <em>Registers</em> application again and navigate to the <em>AppDelegate.swift</em> file. Modify the file so it contains the following code:
+</p><pre class="code-block"><span class="hljs-meta">@NSApplicationMain</span>
+<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">AppDelegate</span>: <span class="hljs-title">NSObject</span>, <span class="hljs-title">NSApplicationDelegate</span> </span>{
+
+  <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">applicationWillBecomeActive</span><span class="hljs-params">(
+    <span class="hljs-number">_</span> notification: Notification)</span></span> {
+      <span class="hljs-built_in">print</span>(<span class="hljs-string">"<span class="hljs-subst">\(#function)</span>"</span>)
+      <span class="hljs-keyword">self</span>.aBadMethod()
+  }
+
+  <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">aBadMethod</span><span class="hljs-params">()</span></span> {
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">"<span class="hljs-subst">\(#function)</span>"</span>)
+  }
+  
+  <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">aGoodMethod</span><span class="hljs-params">()</span></span> {
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">"<span class="hljs-subst">\(#function)</span>"</span>)
+  }
+}</pre>
+<p>Build and run the application. Unsuprisingly, the method name will get spat out in <code>applicationWillBecomeActive(_:)</code> to the debug console, followed by the <code>aBadMethod</code> output. There will be no execution of <code>aGoodMethod</code>.
+</p>
+<p>Create a breakpoint at the very begining of the <code>aBadMethod</code> using the Xcode GUI:
+</p><div class="image-85"><img src="graphics/img41.png"  alt="" title="" /></div>
+<p>Build and run again. Once the breakpoint is hit at the beginning of the <code>aBadMethod</code>, navigate to <em>Debug</em><em>\</em><em>Debug Workflow</em><em>\</em><em>Always Show Disassembly</em> in Xcode. You’ll now see the actual assembly of the program!
+</p><div class="image-70"><img src="graphics/img42.png"  alt="" title="" /></div>
+<p>Next, type the following into the LLDB console:
+</p><pre class="code-block">(lldb) cpx $rip</pre>
+<p>This prints out the instruction pointer register using the <code>cpx</code> command you created earlier.
+</p>
+<p>You’ll notice the output LLDB spits out will match the address highlighted by the green line in Xcode:
+</p><pre class="code-block">(unsigned long) $1 = 0x0000000100008910</pre>
+<p>It’s worth noting your address could be different than the above output, but the address of the green line and the <code>RIP</code> console output will match. Now, enter the following command in LLDB:
+</p><pre class="code-block">(lldb) image lookup -vrn ^Registers.*aGoodMethod</pre>
+<p>This is the tried-and-true <code>image lookup</code> command with the typical regular expression arguments plus an added argument, <code>-v</code>, which dumps the verbose output.
+</p>
+<p>You’ll get a fair bit of content. Search for the content immediately following <code>range = [</code>; <em>Command + F</em> will prove useful here. It’s the first value in the range brackets that you’re looking for.
+</p><div class="image-90"><img src="graphics/img43.png"  alt="" title="" /></div>
+<p>This address is known as the <em>load address</em>. This is the actual physical address of this function in memory.
+</p>
+<p>This differs from the usual output you’ve seen in the <code>image lookup</code> command, in it only displays the offset of the function relative to the executable, also known as the <em>implementation offset</em>. When hunting for a function’s address, it’s important to differentiate the load address from the implementation offset in an executable, as it will differ.
+</p>
+<p>Copy this new address at the beginning of the range brackets. For this particular example, the load address of <code>aGoodMethod</code> is located at <code>0x0000000100008910</code>. Now, write this address which points the beginning of the <code>aGoodMethod</code> method to the <code>RIP</code> register.
+</p><pre class="code-block">(lldb) register write rip 0x0000000100008910</pre>
+<p>Click <em>continue</em> using the Xcode debug button. It’s important you do this instead of typing <code>continue</code> in LLDB, as there&apos;s a bug that will trip you up when modifying the <code>RIP</code> register and continuing in the console.
+</p>
+<p>After pressing the Xcode continue button, you’ll see that <code>aBadMethod()</code> is not executed and <code>aGoodMethod()</code> is executed instead. Verify this by viewing the output in the console log.
+</p>
+<div class="note">
+<p><em>Note</em>: Modifying the <code>RIP</code> register is actually a bit dangerous. You need to make sure the registers holding data for a previous value in the <code>RIP</code> register do not get applied to a new function which would make an incorrect assumption with the registers. Since <code>aGoodMethod</code> and <code>aBadMethod</code> are very similar in functionality, you’ve stopped at the beginning, and as no optimizations were applied to the Registers application, this is not a worry.
+</p></div>
+
+<h2 class="segment-chapter">Registers and breaking up the bits</h2>
+
+<p>As mentioned in the previous chapter, x64 has 16 general purpose registers: <code>RDI</code>, <code>RSI</code>, <code>RAX</code>, <code>RDX</code>, <code>RBP</code>, <code>RSP</code>, <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code>, <code>R10</code>, <code>R11</code>, <code>R12</code>, <code>R13</code>, <code>R14</code> and <code>R15</code>.
+</p>
+<p>In order to maintain compatibility with previous architectures, such as i386’s 32-bit architecture, registers can be broken up into their 32, 16, or 8-bit values.
+</p>
+<p>For registers that have had a history across different architectures, the frontmost character in the name given to the register determines the size of the register. For example, the <code>RIP</code> register starts with <code>R</code>, which signifies 64 bits. If you wanted the 32 bit equivalent of the RIP register, you’d swap out the <code>R</code> character with an <code>E</code>, to get the <code>EIP</code> register.
+</p><div class="image-55"><img src="graphics/img44.png"  alt="" title="" /></div>
+<p>Why is this useful? When working with registers, sometimes the value passed into a register does not need to use all 64 bits. For example, consider the Boolean data type: all you really need is a 1 or a 0 to indicate <code>true</code> or <code>false</code> (though in practice, a Boolean will take up a byte in register size). Based upon the languages features and constraints, the compiler knows this and will sometimes only write information to certain parts of a register.
+</p>
+<p>Let’s see this in action.
+</p>
+<p>Remove all breakpoints in the Registers project. Build and run the project. Now, pause the program out of the blue.
+</p>
+<p>Once stopped, type the following:
+</p><pre class="code-block">(lldb) register write rdx 0x0123456789ABCDEF</pre>
+<p>This writes a value to the <code>RDX</code> register.
+</p>
+<p>Let’s halt for a minute. A word of warning: You should be aware that writing to registers could cause your program to tank, especially if the register you write to is expected to have a certain type of data. But you’re doing this in the name of education, so don’t worry if your program does crash!
+</p>
+<p>Confirm that this value has been successfully written to the <code>RDX</code> register:
+</p><pre class="code-block">(lldb) p/x $rdx </pre>
+<p>Since this is a 64-bit program, you’ll get a double word, i.e. 64 bits, or 8 bytes, or 16 hexadecimal digits.
+</p>
+<p>Now, try printing out the <code>EDX</code> register:
+</p><pre class="code-block">(lldb) p/x $edx </pre>
+<p>The <code>EDX</code> register is the least-significant half of the <code>RDX</code> register. So you’ll only see the least-significant half of the double word, i.e., a word. You should see the following:
+</p><pre class="code-block">0x89abcdef</pre>
+<p>Next, type the following:
+</p><pre class="code-block">(lldb) p/x $dx</pre>
+<p>This will print out the <code>DX</code> register, which is the least-significant half of the <code>EDX</code> register. It is therefore a half word. You should see the following:
+</p><pre class="code-block">0xcdef</pre>
+<p>Next, type the following:
+</p><pre class="code-block">(lldb) p/x $dl</pre>
+<p>This prints out the <code>DL</code> register, which is the least-significant half of the <code>DX</code> register — a byte this time. You should see the following:
+</p><pre class="code-block">0xef</pre>
+<p>Finally, type the following:
+</p><pre class="code-block">(lldb) p/x $dh  </pre>
+<p>This gives you the most significant half of the <code>DX</code> register, i.e. the other half to that given by <code>DL</code>. It should come as no surprise that the <code>L</code> in <code>DL</code> stands for &quot;low&quot; and the <code>H</code> in <code>DH</code> stands for &quot;high&quot;.
+</p>
+<p>Keep an eye out for registers with different sizes when exploring assembly. The size of the registers can give clues about the values contained within. For example, you can easily hunt down functions that return Booleans by the <em>AL</em> register, since a Boolean will use 8 bytes and the <code>AL</code> is the 8 bit portion of the 64-bit &quot;return value register&quot;, RAX.
+</p>
+<h3 class="segment-chapter">Registers R8 to R15</h3>
+
+<p>Since the <code>R8</code> to <code>R15</code> family of registers were created only for 64-bit architectures, they use a completely different format for signifying their smaller counterparts.
+</p>
+<p>Now you’ll explore <code>R9</code>’s different sizing options. Build and run the Registers application, and pause the debugger. Like before, write the same hex value to the <code>R9</code> register:
+</p><pre class="code-block">(lldb) register write $r9 0x0123456789abcdef</pre>
+<p>Confirm that you’ve set the <code>R9</code> register by typing the following:
+</p><pre class="code-block">(lldb) p/x $r9</pre>
+<p>Next type the following:
+</p><pre class="code-block">(lldb) p/x $r9d</pre>
+<p>This will print the lower 32 bits of the <code>R9</code> register. Note how it’s different than how you specified the lower 32 bits for <code>RDX</code> (that is, <code>EDX</code>, if you’ve forgotten already).
+</p>
+<p>Next, type the following:
+</p><pre class="code-block">(lldb) p/x $r9w</pre>
+<p>This time you get the lower 16 bits of <code>R9</code>. Again, this is different than how you did this for <code>RDX</code>.
+</p>
+<p>Finally, type the following:
+</p><pre class="code-block">(lldb) p/x $r9l</pre>
+<p>This prints out the lower 8 bits of <code>R9</code>.
+</p>
+<p>Although this seems a bit tedious, you’re building up the skills to read an onslaught of assembly.
+</p>
+<h2 class="segment-chapter">Breaking down the memory</h2>
+
+<p>Now that you’ve taken a look at the instruction pointer, it’s time to further explore the memory behind it. As its name suggests, the instruction pointer is actually a <em>pointer</em>. It’s not executing the instructions stored in the <code>RIP</code> register — it’s executing the instructions pointed to in the RIP register.
+</p>
+<p>Seeing this in LLDB will perhaps describe it better. Back in the Registers application, open <em>AppDelegate.swift</em> and once again set a breakpoint on <code>aBadMethod</code>. Build and run the app.
+</p>
+<p>Once the breakpoint is hit and the program is stopped, navigate back to the assembly view. If you forgot, and haven’t created a keyboard shortcut for it, it’s found under <code>Debug\Debug Workflow\Always Show Disassembly</code>.
+</p>
+<p>You’ll be greeted by the onslaught of opcodes and registers. Take a look at the location of the <code>RIP</code> register which should be pointing to the very beginning of the function.
+</p>
+<p>For this particular build, the beginning address of <code>aBadMethod</code> begins as <code><em>0x100008910</em></code>. As usual, your address will likely be different.
+</p>
+<p>In the LLDB console, type the following:
+</p><pre class="code-block">(lldb) cpx $rip</pre>
+<p>As you know by now, this prints out the contents of the instruction pointer register.
+</p>
+<p>As expected, you’ll get the address of the start of <code>aBadMethod</code>. But again, the <code>RIP</code> register points to a value in memory. What is it pointing to? Well... you could dust off your mad C coding skillz (you remember those, right?) and dereference the pointer, but there’s a much more elegant way to go about it using LLDB.
+</p>
+<p>Type the following, replacing the address with the address of your <code>aBadMethod</code> function:
+</p><pre class="code-block">(lldb) memory read -fi -c1 0x100008910</pre>
+<p>Wow, what the heck does that command do?!
+</p>
+<p><code>memory read</code> takes a value and reads the contents pointed at by the memory address you supply. The <code>-f</code> command is a formatting argument; in this case, it’s the assembly <em>instruction</em> format. Finally you’re saying you only want one assembly instruction to be printed out with the <em>count</em>, or <code>-c</code> argument.
+</p>
+<p>You’ll get output that looks similar to this:
+</p><pre class="code-block">-&gt;  0x1000017c0: 55  pushq  %rbp</pre>
+<p>This here is some gooooooooood output. It’s telling you the assembly instruction, as well as the opcode, provided in hexadecimal (<em>0x55</em>) that is responsible for the <code>pushq %rbp</code> operation.
+</p>
+<div class="note">
+<p><em>Note</em>: Wait, did you see a &apos;<code>%</code>&apos; preceeding a register?! There’s a bug in LLDB that doesn’t honor your assembly flavor when printing code in the <code>instruction</code> format. Remember, if you see this kind of thing the source and destination operands are reversed!
+</p></div>
+
+<p>Let’s look at that &quot;<code>55</code>&quot; there in the output some more. This is an encoding of the entire instruction, i.e. the whole <code>pushq %rbp</code>. Don’t believe me? You can verify it. Type the following into LLDB:
+</p><pre class="code-block">(lldb) expression -f i -l objc -- 0x55</pre>
+<p>This effectively asks LLDB to interpret 0x55 as an x64 opcode. You’ll get the following output:
+</p><pre class="code-block">$1 = 55  pushq  %rbp</pre>
+<p>That command is a little long, but it’s because you need the required switch to Objective-C context if you are in the Swift debugging context. However, if you move to the Objective-C debugging context, you can use a convenience expression that is a lot shorter.
+</p>
+<p>Try clicking on a different frame in the left panel of Xcode to get into an Objective-C context which doesn’t contain Swift or Objective-C/Swift bridging code. Click on any frame which is in an Objective-C function.
+</p><div class="image-30"><img src="graphics/img45.png"  alt="" title="" /></div>
+<p>Next, type the following into the LLDB console:
+</p><pre class="code-block">(lldb) p/i 0x55</pre>
+<p>Much better, right?
+</p>
+<p>Now, back to the application in hand. Type the following into LLDB, replacing the address once again with your <code>aBadMethod</code> function address:
+</p><pre class="code-block">(lldb) memory read -fi -c10 0x1000017c0</pre>
+<p>You’ll get 10x the output! That’s something worthy to put on that LinkedIn résumé...
+</p><pre class="code-block">-&gt; 0x100008910: 55                    pushq  %rbp
+   0x100008911: 48 89 e5              movq   %rsp, %rbp
+   0x100008914: 48 81 ec c0 00 00 00  subq   $0xc0, %rsp
+   0x10000891b: 4c 89 6d f8           movq   %r13, -0x8(%rbp)
+   0x10000891f: b8 01 00 00 00        movl   $0x1, %eax
+   0x100008924: 89 c7                 movl   %eax, %edi
+   0x100008926: e8 d5 05 00 00        callq  0x100008f00               ; symbol stub for: generic specialization &lt;preserving fragile attribute, Any&gt; of Swift._allocateUninitializedArray&lt;A&gt;(Builtin.Word) -&gt; (Swift.Array&lt;A&gt;, Builtin.RawPointer)
+   0x10000892b: 48 89 c7              movq   %rax, %rdi
+   0x10000892e: 48 89 45 a8           movq   %rax, -0x58(%rbp)
+   0x100008932: 48 89 55 a0           movq   %rdx, -0x60(%rbp)</pre>
+<p>There’s something interesting to note here: assembly instructions can have variable lengths. Take a look at the first instruction, versus the rest of the instructions in the output. The first instruction is 1 byte long, represented by <code>0x55</code>. The following instruction is three bytes long.
+</p>
+<p>Make sure you are still in an Objective-C context, and try to print out the opcode responsible for this instruction. It’s just three bytes, so all you have to do is join them together, right?
+</p><pre class="code-block">(lldb) p/i 0x4889e5</pre>
+<p>You’ll get a different instruction completely unrelated to the <code>mov %rsp, %rbp</code> instruction! You’ll see this:
+</p><pre class="code-block">e5 89  inl    $0x89, %eax</pre>
+<p>What gives? Perhaps now would be a good time to talk about <em>endianness</em>.
+</p>
+<h2 class="segment-chapter">Endianness... this stuff is reversed?</h2>
+
+<p>The x64 as well as the ARM family architecture devices all use <em>little-endian</em>, which means that data is stored in memory with the least significant byte first. If you were to store the number <code>0xabcd</code> in memory, the <code>0xcd</code> byte would be stored first, followed by the <code>0xab</code> byte.
+</p>
+<p>Back to the instruction example, this means that the instruction <code>0x4889e5</code> will be stored in memory as <code>0xe5</code>, followed by <code>0x89</code>, followed by <code>0x48</code>.
+</p>
+<p>Jumping back to that <code>mov</code> instruction you encountered earlier, try reversing the bytes that used to make up the assembly instruction. Type the following into LLDB:
+</p><pre class="code-block">(lldb) p/i 0xe58948</pre>
+<p>You’ll now get your expected assembly instruction:
+</p><pre class="code-block">$2 = 48 89 e5  movq   %rsp, %rbp</pre>
+<p>Let’s see some more examples of little-endian in action. Type the following into LLDB:
+</p><pre class="code-block">(lldb) memory read -s1 -c20 -fx 0x100008910</pre>
+<p>This command reads the memory at address <code>0x100008910</code>. It reads in size chunks of 1 byte thanks to the <code>-s1</code> option, and a count of 20 thanks to the <code>-c20</code> option. You’ll see something like this:
+</p><pre class="code-block">0x100008910: 0x55 0x48 0x89 0xe5 0x48 0x81 0xec 0xc0
+0x100008918: 0x00 0x00 0x00 0x4c 0x89 0x6d 0xf8 0xb8
+0x100008920: 0x01 0x00 0x00 0x00</pre>
+<p>Now, double the size and half the count like so:
+</p><pre class="code-block">(lldb) memory read -s2 -c10 -fx 0x100008910</pre>
+<p>You will see something like this:
+</p><pre class="code-block">0x100008910: 0x4855 0xe589 0x8148 0xc0ec 0x0000 0x4c00 0x6d89 0xb8f8
+0x100008920: 0x0001 0x0000</pre>
+<p>Notice how when the memory values are grouped together, they are reversed thanks to being in little-endian.
+</p>
+<p>Now double the size and half the count again:
+</p><pre class="code-block">(lldb) memory read -s4 -c5 -fx 0x100008910</pre>
+<p>And now you’ll get something like this:
+</p><pre class="code-block">0x100008910: 0xe5894855 0xc0ec8148 0x4c000000 0xb8f86d89
+0x100008920: 0x00000001</pre>
+<p>Once again the values are reversed compared to the previous output.
+</p>
+<p>This is <i>very</i> important to remember and also a source of confusion when exploring memory. Not only will the size of memory give you a potentially incorrect answer, but also the order. Remember this when you start yelling at your computer when you’re trying to figure out how something should work!
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>Good job getting through this one. Memory layout can be a confusing topic. Try exploring memory on other devices to make sure you have a solid understanding of the little-endian architecture and how assembly is grouped together.
+</p>
+<p>In the next chapter, you’ll explore the stack frame and how a function gets called.
+</p></body></html>

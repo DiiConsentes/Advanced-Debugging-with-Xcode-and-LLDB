@@ -1,0 +1,487 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 22: SB Examples, Improved Lookup</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 22: SB Examples, Improved Lookup</h1>
+
+<p>For the rest of the chapters in this section, you&apos;ll focus on Python scripts.
+</p>
+<p>As alluded to in the previous chapter, the <code>image lookup -rn</code> command is on its way out. Time to make a prettier script to display content.
+</p>
+<p>Here’s what you get right now with the <code>image lookup -rn</code> command:
+</p><div class="image-90"><img src="graphics/img127.png"  alt="" title="" /></div>
+<p>When you finish this chapter, you’ll have a new script named <code><em>lookup</em></code> which queries in a <i>much</i> cleaner way.
+</p><div class="image-90"><img src="graphics/img128.png"  alt="" title="" /></div>
+<p>In addition, you’ll add a couple of parameters to the <code>lookup</code> command to add some bells and whistles for your new searches.
+</p>
+<h2 class="segment-chapter">Automating script creation</h2>
+
+<p>Included with the <em>starter</em> directory of this project are two Python scripts that will make your life easier when creating LLDB script content. They are as follows:
+</p>
+<ul>
+<li>
+<p><em>generate</em><em>_</em><em>new</em><em>_</em><em>script.py</em>: This will create a new skeleton script with whatever name you provide it and stick it into the same directory <code>generate_new_script</code> resides in.
+</p></li>
+
+<li>
+<p><em>lldbinit.py</em>: This script will enumerate all scripts (files that end with <code>.py</code>) located within the same directory as itself and try to load them into LLDB. In addition, if there are any files with a <code>txt</code> extension, LLDB will try to load those files’ contents through <code>command import</code>.
+</p></li>
+</ul>
+
+<p>Take both of these files found in the <em>starter</em> folder of this chapter and stick them into your <em>~/lldb/</em> directory.
+</p>
+<p>Once the files are in their correct locations, jump over to your <em>~/.lldbinit</em> file and add following line of code:
+</p><pre class="code-block">command script import ~/lldb/lldbinit.py</pre>
+<p>This will load the <em>lldbinit.py</em> file which will enumerate all <code>.py</code> files and <code>.txt</code> files found in the same directory and load them into LLDB. This means that from here on out, simply adding a script file into the <code>~/lldb</code> directory will load it automatically once LLDB starts.
+</p>
+<h3 class="segment-chapter">Creating the lookup command</h3>
+
+<p>With your new tools properly set up, open up a Terminal window. Launch a new instance of LLDB:
+</p><pre class="code-block">lldb</pre>
+<p>As expected, you’ll be greeted by the LLDB prompt.
+</p>
+<p>Make sure there are no build errors in any of your existing LLDB scripts:
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>If your output is free of errors, it&apos;s time to try out your new command <em>__</em><em>generate</em><em>_</em><em>script</em> (implemented from the <em>generate</em><em>_</em><em>new</em><em>_</em><em>script.py</em> file).
+</p>
+<p>In LLDB, type:
+</p><pre class="code-block">(lldb) __generate_script lookup</pre>
+<p>If everything went as expected, you’ll get output similar to the following:
+</p><pre class="code-block">Opening &quot;/Users/derekselander/lldb/lookup.py&quot;...</pre>
+<p>In addition, a Finder window will pop up showing you the location of the file. It’s pretty crazy what you can do with these Python scripts, right?
+</p>
+<p>Hold onto the Finder window for a second — don’t close it. Head back to the LLDB Terminal window and apply the <em>reload</em><em>_</em><em>script</em> command.
+</p>
+<p>Since the <code>lookup.py</code> script was created in the same directory as the <code>lldbinit.py</code> file and you have just reloaded the contents of <code>~/.lldbinit</code>, you’ll now have a working skeleton of the lookup.py file. Give the command a go.
+</p><pre class="code-block">(lldb) lookup</pre>
+<p>You’ll get the following output:
+</p><pre class="code-block">Hello! the lookup command is working!</pre>
+<p>Now you can create and use custom commands in as little as two LLDB commands. Yeah, you could do all the setup in one command, but I like having control over when my scripts reload.
+</p>
+<h2 class="segment-chapter">lldbinit directory structure suggestions</h2>
+
+<p>The way I’ve structured my own <code>lldbinit</code> files might be insightful to some. This is not a required section, but more of a suggestion on how to organize all of your custom scripts and content for LLDB.
+</p>
+<p>I tend to keep my <code>~/.lldbinit</code> as light as possible and use a script like <code>lldbinit.py</code> to load all my contents from a particular directory. Facebook’s Chisel does the same thing with the <em>fblldb.py</em> file. Check it out if you’re interested.
+</p>
+<p>I keep that directory under source control in case I need to transfer logic to a different computer, or in case I completely screw something up. For example, my actual <code>~/.lldbinit</code> file (when not working on this book) only contains the following items:
+</p><pre class="code-block">command script import /Users/derekselander/lldb_repo/lldb_commands/lldbinit.py
+command script import /Users/derekselander/chisel/chisel/fblldb.py</pre>
+<p>The <code>lldb_repo</code> is a public git repository at <a href="https://github.com/DerekSelander/lldb">https://github.com/DerekSelander/lldb</a> which contains some LLDB scripts designed for reverse engineering.
+</p>
+<p>I also have Facebook’s Chisel on source control, so whenever those developers push a new, interesting release, I’ll just pull the latest from my Chisel source control directory at <a href="https://github.com/facebook/chisel">https://github.com/facebook/chisel</a> and I’ll have everything I need the next time I run LLDB, or reload my scripts through <code>reload_script</code>.
+</p>
+<p>Inside my <code>lldb_commands</code> directory, I have all my Python scripts as well as two text files. One text file is named <em>cmds.txt</em> and holds all my <code>command regex</code>’s and <code>command alias</code>’s. I also have another file named <em>settings.txt</em>, which I use to augment any LLDB settings.
+</p>
+<p>For example, the only content I have in my <code>settings.txt</code> file at the moment is:
+</p><pre class="code-block">settings set target.skip-prologue false
+settings set target.x86-disassembly-flavor intel</pre>
+<p>You’ve already added these settings to your <code>~/.lldbinit</code> file earlier in this book, but I prefer this implementation to separate out my custom LLDB commands to my LLDB settings so I don’t get lost when <code>grep</code>’ing my <code>~/.lldbinit</code> file.
+</p>
+<p>However, for this book, I chose to keep each chapter content independent for each script installation. This means you’ve manually added content to your <code>~/.lldbinit</code> file so you know what’s happening. You should revisit this new structure implementation when (if?) you finish this book, as there are several benefits to this suggested layout. The benefits are as follows:
+</p>
+<ol>
+<li>
+<p>Calling <code>reload_script</code> only displays the commands <code>~/.lldbinit</code> is loading; it will not display the sub-scripts being loaded. For example this will echo back the <code>lldbinit.py</code> being loaded, but not echo out the content <code>lldbinit.py</code> itself loads.
+</p>
+<p>This makes it easier to create scripts because I often use <code>reload_script</code> as a way to check for any error messages on the latest script I am working on. The less output there is from executing <code>reload_script</code>, the less output there is to review when checking for errors in the console.
+</p></li>
+
+<li>
+<p>As noted, having as little content as possible in <code>~/.lldbinit</code> will let you easily transfer content between computers, especially if that content is under source control.
+</p></li>
+
+<li>
+<p>Finally, it’s much easier to add new scripts with this implementation. Just stick them in the same directory as the <code>lldbinit.py</code> file and it will be loaded next time. The alternative is to manually add the path to your script to the <code>~/.lldbinit</code> file, which can get annoying if you do this frequently.
+</p></li>
+</ol>
+
+<p>That’s my two cents on the subject. You’ll use this implementation strategy for the remaining scripts in this section as you only have to add scripts to your <code>~/lldb</code> directory for them to get loaded into LLDB... which is rather nice, right?
+</p>
+<p>Back to the <code>lookup</code> command!
+</p>
+<h2 class="segment-chapter">Implementing the lookup command</h2>
+
+<p>As you saw briefly in the previous chapter, the foundation behind this <code>lookup</code> command is rather simple. The main “secret” is using <code>SBTarget</code>’s <code><em>FindGlobalFunctions</em></code> API. After that, all you need to do is format the output as you like.
+</p>
+<p>You’ll continue working with the <em>Allocator</em> Xcode project, found in the <em>starter</em> folder for this chapter.
+</p>
+<p>Open the project, and build and run on a iPhone X Simulator. You’ll use this project to test out your new <code>lookup</code> command queries as the script progresses throughout the chapter.
+</p>
+<p>Once running, pause the application and bring up LLDB.
+</p>
+<p>My memory is a little fuzzy. Which parameters does this <code>FindGlobalFunctions</code> specify? Type the following into LLDB:
+</p><pre class="code-block">(lldb) script help(lldb.SBTarget.FindGlobalFunctions)</pre>
+<p>You’ll get the following output showing the method signature:
+</p><pre class="code-block"><span class="hljs-type">FindGlobalFunctions</span>(<span class="hljs-keyword">self</span>, *args) unbound lldb.<span class="hljs-type">SBTarget</span> method
+    <span class="hljs-type">FindGlobalFunctions</span>(<span class="hljs-keyword">self</span>, str name, uint32_t max_matches, <span class="hljs-type">MatchType</span> matchtype) -&gt; <span class="hljs-type">SBSymbolContextList</span></pre>
+<p>Since it’s a Python class, you can ignore that first <code><em>self</em></code> parameter. The <code>str</code> parameter named <em>name</em> will be your lookup query. <code><em>max_matches</em></code> will dictate the maximum number of hits you want. If you specify the number 0, it will return all available matches. The <code><em>matchType</em></code> parameter is a lldb Python enum on which you can perform different types of searches, such as regex or non-regex.
+</p>
+<p>Since regex searching really is the only way to go, you’ll use the LLDB enum value <code><em>lldb.eMatchTypeRegex</em></code>.
+</p>
+<p>The other enum values can be found here: <a href="https://lldb.llvm.org/python_reference/_lldb%27-module.html#eMatchTypeRegex">https://lldb.llvm.org/python</a><a href="https://lldb.llvm.org/python_reference/_lldb%27-module.html#eMatchTypeRegex">_</a><a href="https://lldb.llvm.org/python_reference/_lldb%27-module.html#eMatchTypeRegex">reference/</a><a href="https://lldb.llvm.org/python_reference/_lldb%27-module.html#eMatchTypeRegex">_</a><a href="https://lldb.llvm.org/python_reference/_lldb%27-module.html#eMatchTypeRegex">lldb%27-module.html#eMatchTypeRegex</a>
+</p>
+<p>Time to implement this in the <em>lookup.py</em> script. Open up <em>~/lldb/lookup.py</em> in your favorite text editor. Find the following code at the end of <em>handle</em><em>_</em><em>command</em>:
+</p><pre class="code-block"><span class="hljs-comment"># Uncomment if you are expecting at least one argument</span>
+<span class="hljs-comment"># clean_command = shlex.split(args[0])[0]</span>
+result.AppendMessage(<span class="hljs-string">'Hello! the lookup command is working!'</span>)</pre>
+<p>Delete the above code, and replace it with the following, making sure you preserve the indentation:
+</p><pre class="code-block"><span class="hljs-comment"># 1</span>
+clean_command = shlex.split(args[<span class="hljs-number">0</span>])[<span class="hljs-number">0</span>]
+<span class="hljs-comment"># 2</span>
+target = debugger.GetSelectedTarget()
+
+<span class="hljs-comment"># 3</span>
+contextlist = target.FindGlobalFunctions(clean_command, <span class="hljs-number">0</span>, lldb.eMatchTypeRegex)
+<span class="hljs-comment"># 4</span>
+result.AppendMessage(str(contextlist))</pre>
+<p>Here’s what this does:
+</p>
+<ol>
+<li>
+<p>Obtains a cleaned version of the command that was passed to the script, using the same magic as you saw in Chapter 20.
+</p></li>
+
+<li>
+<p>Grabs the instance of <code>SBTarget</code> through <code>SBDebugger</code>.
+</p></li>
+
+<li>
+<p>Uses the <code>FindGlobalFunctions</code> API with <code>clean_command</code>. You’re supplying 0, for no upper limit on number of results and giving it the <code>eMatchTypeRegex</code> match type to use a regular expression search.
+</p></li>
+
+<li>
+<p>You&apos;re turning the <code>contextlist</code> into a Python <code>str</code> and then appending it to the <code>SBCommandReturnObject</code>.
+</p></li>
+</ol>
+
+<p>Back in Xcode, reload the contents through the LLDB console:
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>Give the <code>lookup</code> command a go. Remember that <code>DSObjectiveCObject</code> class you spelunked in the previous chapter? Dump everything pertaining to that through LLDB:
+</p><pre class="code-block">lookup DSObjectiveCObject</pre>
+<p>You’ll get output that actually looks worse than <code><em>image lookup -rn DSObjectiveCObject</em></code>:
+</p><div class="image-90"><img src="graphics/img129.png"  alt="" title="" /></div>
+<p>Use LLDB’s <code><em>script</em></code> command to figure out which APIs to explore further:
+</p><pre class="code-block">(lldb) script k = lldb.target.FindGlobalFunctions(&apos;DSObjectiveCObject&apos;, 0, lldb.eMatchTypeRegex)</pre>
+<p>This will replicate what you’ve done in the <code>lookup.py</code> script and assign the instance of <code>SBSymbolContextList</code> to the value <code>k</code>. I am a fan of short variables names when exploring API names — if you haven’t noticed.
+</p>
+<p>Explore the documentation of <code>SBSymbolContextList</code>:
+</p><pre class="code-block">(lldb) gdocumentation SBSymbolContextList</pre>
+<p>While you’re at it, dump all the all the methods implemented by <code>SBSymbolContextList</code>. In LLDB:
+</p><pre class="code-block">(lldb) script dir(lldb.SBSymbolContextList)</pre>
+<p>This will dump out all the methods <code>SBSymbolContextList</code> implements or overrides. There’s a lot there. But focus on the <code><em>__iter__</em></code> and the <code><em>__getitem__</em></code>.
+</p><div class="image-90"><img src="graphics/img130.png"  alt="" title="" /></div>
+<p>This is good news for your script, since this means <code>SBSymbolContextList</code> is <em>iterable</em> as well as <em>indexable</em>. A second ago, you just assigned an instance of <code>SBSymbolContextList</code> to a variable named <code>k</code> through LLDB.
+</p>
+<p>In the LLDB console, use indexing to grab an item in the <code>k</code> object.
+</p><pre class="code-block">(lldb) script k[0]</pre>
+<p>This is equivalent to (though much more ugly) typing <code>script k.__getitem__(0)</code>. You’ll get something like:
+</p><pre class="code-block">&lt;lldb.SBSymbolContext; proxy of &lt;Swig Object of type &apos;lldb::SBSymbolContext *&apos; at 0x113a83780&gt; &gt;</pre>
+<p>Good to know! The <code>SBSymbolContextList</code> holds an “array” of <code>SBSymbolContext</code>.
+</p>
+<p>Use the <code>print</code> command to get the context of this <code>SBSymbolContext</code>:
+</p><pre class="code-block">(lldb) script print k[0]</pre>
+<p>Your output could differ, but I got the <code>SBSymbolContext</code> which represents <code>-[DSObjectiveCObject setLastName:]</code>, like so:
+</p><pre class="code-block">     Module: file = &quot;/Users/derekselander/Library/Developer/Xcode/DerivedData/Allocator-czsgsdzfgtmanrdjnydkbzdmhifw/Build/Products/Debug-iphonesimulator/Allocator.app/Allocator&quot;, arch = &quot;x86_64&quot;
+CompileUnit: id = {0x00000000}, file = &quot;/Users/derekselander/iOS/dbg/s4-custom-lldb-commands/22.  Ex 1, Improved Lookup/projects/final/Allocator/Allocator/DSObjectiveCObject.m&quot;, language = &quot;objective-c&quot;
+   Function: id = {0x100000268}, name = &quot;-[DSObjectiveCObject setLastName:]&quot;, range = [0x0000000100001c00-0x0000000100001c37)
+   FuncType: id = {0x100000268}, decl = DSObjectiveCObject.h:33, compiler_type = &quot;void (NSString *)&quot;
+     Symbol: id = {0x0000001e}, range = [0x0000000100001c00-0x0000000100001c40), name=&quot;-[DSObjectiveCObject setLastName:]&quot;</pre>
+<p>You’ll use properties and/or getter methods from the <code>SBSymbolContext</code> to grab the name of this function.
+</p>
+<p>The easiest way to do this is to grab the <code><em>SBSymbol</em></code> from the <code>SBSymbolContext</code> through the <code><em>symbol</em></code> property. From there the <code>SBSymbol</code> contains a <em>name</em> property, which will return your happy Python string.
+</p>
+<p>Make sure this works in your LLDB console:
+</p><pre class="code-block">(lldb) script print k[0].symbol.name</pre>
+<p>In my case, I received the following:
+</p><pre class="code-block">-[DSObjectiveCObject setLastName:]</pre>
+<p>This is enough information to work with in building out your script. You&apos;ll take the <code>SBSymbolContextList</code>, iterate through the items and print out the name of the function it finds.
+</p>
+<p>Head back over to your <em>lookup.py</em> script and modify the contents in the <code><em>handle_command</em></code> function. Find the following lines:
+</p><pre class="code-block"><span class="hljs-comment"># 3</span>
+contextlist = target.FindGlobalFunctions(clean_command, <span class="hljs-number">0</span>, lldb.eMatchTypeRegex)
+<span class="hljs-comment"># 4</span>
+result.AppendMessage(str(contextlist))</pre>
+<p>Replace them with the following (indenting correctly!):
+</p><pre class="code-block">contextlist = target.FindGlobalFunctions(clean_command, <span class="hljs-number">0</span>, lldb.eMatchTypeRegex)
+
+output = <span class="hljs-string">''</span>
+<span class="hljs-keyword">for</span> context <span class="hljs-keyword">in</span> contextlist:
+    output += context.symbol.name + <span class="hljs-string">'\n\n'</span>
+
+result.AppendMessage(output)</pre>
+<p>You&apos;re now iterating all <code>SBSymbolContext</code>’s within the returned <code>SBSymbolContextList</code>, hunting down the name of the function and separating it by two newlines.
+</p>
+<p>Jump back to Xcode, and reload your script:
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>Then give your updated <code>lookup</code> command a test in LLDB:
+</p><pre class="code-block">(lldb) lookup DSObjectiveCObject</pre>
+<p>You’ll get much prettier output than before:
+</p><pre class="code-block">-[DSObjectiveCObject setLastName:]
+
+-[DSObjectiveCObject .cxx_destruct]
+
+-[DSObjectiveCObject setFirstName:]
+
+-[DSObjectiveCObject eyeColor]
+
+-[DSObjectiveCObject init]
+
+-[DSObjectiveCObject lastName]
+
+-[DSObjectiveCObject setEyeColor:]
+
+-[DSObjectiveCObject firstName]</pre>
+<p>This is nice and all, but I want to see where these functions reside in my process. I want to group all functions to a particular module (an <code><em>SBModule</em></code>) when they&apos;re being printed out separated by a header with the module name and number of hits for the module.
+</p>
+<p>Head on back to the <em>lookup.py</em> file. You’ll now create two new functions.
+</p>
+<p>The first function will be named <code><em>generateFunctionDictionary</em></code>, which will take your <code>SBBreakpointContextList</code> and generate a Python Dictionary of lists. This <code>dict</code> will contain keys for each module. For the value in the dict, you’ll have a Python list for each <code>SBSymbolContext</code> that gets hit.
+</p>
+<p>The second function will be named <code><em>generateOutput</em></code>, which will parse this dictionary you’ve created along with the <code>options</code> you’ve received from the <code>OptionParser</code> instance. This method will return a String to be printed back to the console.
+</p>
+<p>Start by implementing the <code><em>generateModuleDictionary</em></code> function right below the <code>handle_command</code> function in your <em>lookup.py</em> script:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">generateModuleDictionary</span><span class="hljs-params">(contextlist)</span>:</span>
+    mdict = {}
+    <span class="hljs-keyword">for</span> context <span class="hljs-keyword">in</span> contextlist:
+        <span class="hljs-comment"># 1</span>
+        key = context.module.file.fullpath
+        <span class="hljs-comment"># 2</span>
+        <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> key <span class="hljs-keyword">in</span> mdict:
+            mdict[key] = []
+
+        <span class="hljs-comment"># 3</span>
+        mdict[key].append(context)
+    <span class="hljs-keyword">return</span> mdict</pre>
+<p>Here’s what going on:
+</p>
+<ol>
+<li>
+<p>From within the <code>SBSymbolContext</code>, you’re grabbing the <code>SBModule</code> (<code><em>module</em></code>), then the <code>SBFileSpec</code> (<em>file</em>), then the Python string of the <code><em>fullPath</em></code> and assigning it to a variable named <code><em>key</em></code>. It’s important to grab the <code>fullPath</code> (instead of, say, <code>SBFileSpec</code>’s <code><em>basename</em></code> property, since there could be multiple modules with the same basename).
+</p></li>
+
+<li>
+<p>This <code>mdict</code> variable is going to hold a list of all symbols found, split by module. The key in this dictionary will be the module name, and the value will be an array of symbols found in that module. On this line, you’re checking if the dictionary already contains a list for this module. If not, a blank list is added for this module key.
+</p></li>
+
+<li>
+<p>You’re adding the <code>SBSymbolContext</code> instance to the appropriate list for this module. You can safely assume that for every key in the <code>mdict</code> variable, there will be at least one or more <code>SBSymbolContext</code> instances.
+</p></li>
+</ol>
+
+<div class="note">
+<p><em>Note</em>: A much easier way of getting a unique key would be to just use the <code><em>__str__()</em></code> method <code>SBModule</code> has (and pretty much every class in the LLDB Python module). This is the function that gets called when you call Python’s <code><em>print</em></code> on one of these objects. However, you wouldn’t be learning about all these classes, properties and methods in the process if you just relied on the <code>__str__()</code> method.
+</p></div>
+
+<p>Right below the <code>generateModuleDictionary</code> function, implement the <code><em>generateOutput</em></code> function:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">generateOutput</span><span class="hljs-params">(mdict, options, target)</span>:</span>
+    <span class="hljs-comment"># 1</span>
+    output = <span class="hljs-string">''</span>
+    separator = <span class="hljs-string">'*'</span> * <span class="hljs-number">60</span> + <span class="hljs-string">'\n'</span>
+    <span class="hljs-comment"># 2</span>
+    <span class="hljs-keyword">for</span> key <span class="hljs-keyword">in</span> mdict:
+        <span class="hljs-comment"># 3</span>
+        count = len(mdict[key])
+        firstItem = mdict[key][<span class="hljs-number">0</span>]
+        <span class="hljs-comment"># 4</span>
+        moduleName = firstItem.module.file.basename
+        output += <span class="hljs-string">'{0}{1} hits in {2}\n{0}'</span>.format(separator, 
+                                                   count, 
+                                                   moduleName)
+        <span class="hljs-comment"># 5</span>
+        <span class="hljs-keyword">for</span> context <span class="hljs-keyword">in</span> mdict[key]:
+            query = <span class="hljs-string">''</span>
+            query += context.symbol.name
+            query += <span class="hljs-string">'\n\n'</span>
+            output += query
+  <span class="hljs-keyword">return</span> output</pre>
+<p>Here’s what this does:
+</p>
+<ol>
+<li>
+<p>The <code><em>output</em></code> variable will be the return string that contains all the content eventually passed to your <code>SBCommandReturnObject</code>.
+</p></li>
+
+<li>
+<p>Enumerate all the keys found in the <code>mdict</code> dictionary.
+</p></li>
+
+<li>
+<p>This will grab the count for the array and the very first item in the list. You’ll use this information to query the module name later.
+</p></li>
+
+<li>
+<p>You’re grabbing the module name to use in the header output for each section.
+</p></li>
+
+<li>
+<p>This will iterate all the <code>SBSymbolContext</code> items in the Python <code>list</code> and add the names to the <code>output</code> variable.
+</p></li>
+</ol>
+
+<p>One final tweak before you can test this out.
+</p>
+<p>Augment the code in the <em>handle</em><em>_</em><em>command</em> function so it utilizes the two new methods you’ve just created. Find the following code:
+</p><pre class="code-block">output = <span class="hljs-string">''</span>
+<span class="hljs-keyword">for</span> context <span class="hljs-keyword">in</span> contextlist:
+    output += context.symbol.name + <span class="hljs-string">'\n\n'</span></pre>
+<p>And replace it with the following:
+</p><pre class="code-block">mdict = generateModuleDictionary(contextlist)
+output = generateOutput(mdict, options, target)</pre>
+<p>You know what to do. Go to Xcode; reload contents in LLDB.
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>Check out your new and improved lookup command:
+</p><pre class="code-block">(lldb) lookup DSObjectiveCObject</pre>
+<p>You’ll get something like this:
+</p><pre class="code-block">************************************************************
+8 hits in Allocator
+************************************************************
+-[DSObjectiveCObject setLastName:]
+
+-[DSObjectiveCObject .cxx_destruct]
+
+-[DSObjectiveCObject setFirstName:]
+
+-[DSObjectiveCObject eyeColor]
+
+-[DSObjectiveCObject init]
+
+-[DSObjectiveCObject lastName]
+
+-[DSObjectiveCObject setEyeColor:]
+
+-[DSObjectiveCObject firstName]</pre>
+<p>Cool. Go after all Objective-C methods that begin with <code><em>initWith</em></code>, and only contain two parameters.
+</p><pre class="code-block">(lldb) lookup initWith(\w+\:){2,2}\]</pre>
+<p>You’ll get hits from both public and private modules, all loaded into the Allocator process.
+</p>
+<h2 class="segment-chapter">Adding options to lookup</h2>
+
+<p>You’ll keep the options nice and simple and implement only two options that don’t require any extra parameters.
+</p>
+<p>You’ll implement the following:
+</p>
+<ul>
+<li>
+<p>Add load addresses to each query. This is ideal if you want to know where the actual function is in memory.
+</p></li>
+
+<li>
+<p>Provide a module summary only. Don’t produce function names, only list the count of hits per module
+</p></li>
+</ul>
+
+<p>The <code>__generate_script</code> command added some placeholders for the <code><em>generateOptionParser</em></code> method found at the bottom of the <em>lookup.py</em> file. In the <code><em>generateOptionParser</em></code> function, change the function so it contains the following code:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">generateOptionParser</span><span class="hljs-params">()</span>:</span>
+    usage = <span class="hljs-string">"usage: %prog [options] code_to_query"</span>
+    parser = optparse.OptionParser(usage=usage, prog=<span class="hljs-string">"lookup"</span>)
+
+    parser.add_option(<span class="hljs-string">"-l"</span>, <span class="hljs-string">"--load_address"</span>,
+          action=<span class="hljs-string">"store_true"</span>,
+          default=<span class="hljs-keyword">False</span>,
+          dest=<span class="hljs-string">"load_address"</span>,
+          help=<span class="hljs-string">"Show the load addresses for a particular hit"</span>)
+
+    parser.add_option(<span class="hljs-string">"-s"</span>, <span class="hljs-string">"--module_summary"</span>,
+          action=<span class="hljs-string">"store_true"</span>,
+          default=<span class="hljs-keyword">False</span>,
+          dest=<span class="hljs-string">"module_summary"</span>,
+          help=<span class="hljs-string">"Only show the amount of queries in the module"</span>)
+    <span class="hljs-keyword">return</span> parser</pre>
+<p>There’s no need to take a deep dive in this code since you learned about this in a previous chapter. You’re creating two supported options, <code><em>-s</em></code>, or <code><em>--module_summary</em></code> and <code><em>-l</em></code>, or <code><em>--load_address</em></code>.
+</p>
+<p>You’ll implement the load address option first. In the <code><em>generateOutput</em></code> function, navigate to the for-loop iterating over the <code>SBSymbolContext</code>, which starts with the <code>for context in mdict[key]:</code> line of code.
+</p>
+<p>Make that for-loop look like this:
+</p><pre class="code-block"><span class="hljs-keyword">for</span> context <span class="hljs-keyword">in</span> mdict[key]:
+    query = <span class="hljs-string">''</span>
+
+    <span class="hljs-comment"># 1</span>
+    <span class="hljs-keyword">if</span> options.load_address:
+        <span class="hljs-comment"># 2</span>
+        start = context.symbol.addr.GetLoadAddress(target)
+        end = context.symbol.end_addr.GetLoadAddress(target)
+        <span class="hljs-comment"># 3</span>
+        startHex = <span class="hljs-string">'0x'</span> + format(start, <span class="hljs-string">'012x'</span>)
+        endHex = <span class="hljs-string">'0x'</span> + format(end, <span class="hljs-string">'012x'</span>)
+        query += <span class="hljs-string">'[{}-{}]\n'</span>.format(startHex, endHex)
+
+    query += context.symbol.name
+    query += <span class="hljs-string">'\n\n'</span>
+    output += query</pre>
+<p>Here’s what that does:
+</p>
+<ol>
+<li>
+<p>You’re adding the conditional to see if the <code>load_address</code> option is set. If so, this will add content to the output.
+</p></li>
+
+<li>
+<p>This traverses the <code>SBSymbolContext</code> to the <code>SBSymbol</code> (<code><em>symbol</em></code> property) to the <code>SBAddress</code> (<code><em>addr</em></code> or <code><em>end\_addr</em></code>) and gets a Python <code>long</code> through the <code><em>GetLoadAddress</em></code> method.
+</p></li>
+</ol>
+
+<p>There’s actually a <code>load_addr</code> available to <code>SBAddress</code>, but I’ve found it to be a bit buggy at times, so I’ve defaulted to using the <code>GetLoadAddress</code> API instead. This method expects the <code>SBTarget</code> as an input parameter.
+</p>
+<ol>
+<li>
+<p>After you have the <code>start</code> and <code>end</code> addresses expressed in Python <code>long</code>’s, you are formatting them to look pretty and consistent using the Python <em>format</em> function.
+</p></li>
+</ol>
+
+<p>This pads the number with zeros if needed, notes it should be 12 digits long, and formats it in hexadecimal.
+</p>
+<p>Save your work and revisit Xcode and the LLDB console. Reload.
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>Give your new option a go:
+</p><pre class="code-block">(lldb) lookup -l DSObjectiveCObject</pre>
+<p>You’ll get output similar to the truncated output:
+</p><pre class="code-block">************************************************************
+8 hits in Allocator
+************************************************************
+[0x0001099d2c00-0x0001099d2c40]
+-[DSObjectiveCObject setLastName:]
+
+[0x0001099d2c40-0x0001099d2cae]
+-[DSObjectiveCObject .cxx_destruct]</pre>
+<p>Put a breakpoint at an address from this list to see if it matches with the function. Do it like so, replacing the address with one from your list:
+</p><pre class="code-block">(lldb) b 0x0001099d2c00
+Breakpoint 3: where = Allocator`-[DSObjectiveCObject setLastName:] at DSObjectiveCObject.h:33, address = 0x00000001099d2c00</pre>
+<p>Great job! One more option to implement and then you’re done!
+</p>
+<p>Revisit the <code><em>generateOutput</em></code> function for the final time. Find the following line:
+</p><pre class="code-block">moduleName = firstItem.module.file.basename</pre>
+<p>Add the following code right after that line:
+</p><pre class="code-block"><span class="hljs-keyword">if</span> options.module_summary:
+    output += <span class="hljs-string">'{} hits in {}\n'</span>.format(count, moduleName)
+    <span class="hljs-keyword">continue</span></pre>
+<p>This simply adds the number of hits in each module and skips adding the actual symbols.
+</p>
+<p>That’s it. No more code. Save, then head back to Xcode to reload your script:
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>Give your <em>module</em><em>_</em><em>summary</em> option a go:
+</p><pre class="code-block">(lldb) lookup -s viewWillAppear</pre>
+<p>You’ll get something similar to this:
+</p><pre class="code-block">46 hits in UIKit
+1 hits in WebKit
+4 hits in Allocator</pre>
+<p>That’s it! You’re done! You’ve made a pretty powerful script from scratch. You’ll use this script to search for code in future chapters. The summary option is a great tool to have when you’re casting a wide search and then want to narrow it down further.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>There are many more options you could add to this <code>lookup</code> command. You could make a <code><em>-S</em></code> or <code><em>-Swift_only</em></code> query by going after <code>SBSymbolContext</code>’s <code>SBFunction</code> (through the <code><em>function</em></code> property) to access the <code><em>GetLanguage()</em></code> API.
+</p>
+<p>While you’re at it, you should also add a <code><em>-m</em></code> or <code><em>--module</em></code> option to filter content to a certain module.
+</p>
+<p>If you want to see what else is possible, check out my implementation of lookup here: <a href="https://github.com/DerekSelander/LLDB/blob/master/lldb_commands/lookup.py">https://github.com/DerekSelander/LLDB/blob/master/lldb</a><a href="https://github.com/DerekSelander/LLDB/blob/master/lldb_commands/lookup.py">_</a><a href="https://github.com/DerekSelander/LLDB/blob/master/lldb_commands/lookup.py">commands/lookup.py</a>.
+</p>
+<p>Enjoy adding those options!
+</p></body></html>

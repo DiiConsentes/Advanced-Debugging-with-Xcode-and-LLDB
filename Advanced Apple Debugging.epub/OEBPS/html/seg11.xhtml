@@ -1,0 +1,347 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 4: Stopping in Code</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 4: Stopping in Code</h1>
+
+<p>Whether you’re using Swift, Objective-C, C++, C, or an entirely different language in your technology stack, you’ll need to learn how to create breakpoints. It’s easy to click on the side panel in Xcode to create a breakpoint using the GUI, but the LLDB console can give you much more control over breakpoints.
+</p>
+<p>In this chapter, you’re going to learn all about breakpoints and how to create them using LLDB.
+</p>
+<h2 class="segment-chapter">Signals</h2>
+
+<p>For this chapter, you’ll be looking at a project I’ve supplied; it’s called <em>Signals</em> and you’ll find it in the resources bundle for this chapter.
+</p><div class="image-35"><img src="graphics/img11.png"  alt="" title="" /></div>
+<p>Open up the <em>Signals</em> project using Xcode. <em>Signals</em> is a basic master-detail project themed as an American football app that displays some rather nerdily-named offensive play calls.
+</p>
+<p>Internally, this project montors several Unix signals and displays them when the <em>Signals</em> program receives them.
+</p>
+<p>Unix signals are a basic form of interprocess communication. For example, one of the signals, <code>SIGSTOP</code>, can be used to save the state and pause execution of a process, while its counterpart, <code>SIGCONT</code>, is sent to a program to resume execution. Both of these signals can be used by a debugger to pause and continue a program’s execution.
+</p>
+<p>This is an interesting application on several fronts, because it not only explores Unix signal handling, but also highlights what happens when a controlling process (LLDB) handles the passing of Unix signals to the controlled process. By default, LLDB has custom actions for handling different signals. Some signals are not passed onto the controlled process while LLDB is attached.
+</p>
+<p>In order to display a signal, you can either <code>raise</code> a Signal from within the application, or send a signal externally from a different application, like Terminal.
+</p>
+<p>In addition, there’s a <code>UISwitch</code> that toggles the signal handling. When the switch is toggled, it calls a C function <code>sigprocmask</code> to disable or enable the signal handlers.
+</p>
+<p>Finally, the Signal application has a <em>Timeout</em> bar button which raises the <code>SIGSTOP</code> signal from within the application, essentially “freezing” the program. However, if LLDB is attached to the Signals program (and by default it will be, when you build and run through Xcode), calling <code>SIGSTOP</code> will allow you to inspect the execution state with LLDB while in Xcode.
+</p>
+<p>Make sure the <em>iPhone X Simulator</em> is selected as the target. Build and run the app. Once the project is running, navigate to the Xcode console and pause the debugger.
+</p><div class="image-80"><img src="graphics/img12.png"  alt="" title="" /></div>
+<p>Resume Xcode and keep an eye on the Simulator. A new row will be added to the UITableView whenever the debugger stops then resumes execution. This is achieved by Signals monitoring the <code>SIGSTOP</code> Unix signal event and adding a row to the data model whenever it occurs. When a process is stopped, any new signals will not be immediately processed because the program is sort of, well, stopped.
+</p>
+<h3 class="segment-chapter">Xcode breakpoints</h3>
+
+<p>Before you go off learning the cool, shiny breakpoints through the LLDB console, it’s worth covering what you can achieve through Xcode alone.
+</p>
+<p><em>Symbolic breakpoints</em> are a great debugging feature of Xcode. They let you set a breakpoint on a certain <em>symbol</em> within your application. An example of a symbol is <code>-[NSObject init]</code>, which refers to the <code>init</code> method of <code>NSObject</code> instances.
+</p>
+<p>The neat thing about symbolic breakpoints in Xcode is that once you enter a symbolic breakpoint, you don’t have to type it in again the next time the program launches.
+</p>
+<p>You’re now going to try using a symbolic breakpoint to show all the instances of <code>NSObject</code> being created.
+</p>
+<p>Kill the app if it’s currently running. Next, switch to the <em>Breakpoint Navigator</em>. In the bottom left, click the plus button to select the <em>Symbolic Breakpoint...</em> option.
+</p><div class="image-80"><img src="graphics/img13.png"  alt="" title="" /></div>
+<p>A popup will appear. In the <em>Symbol</em> part of the popup type: <code>-[NSObject init]</code>. Under <em>Action</em>, select <em>Add Action</em> and then select <em>Debugger Command</em> from the dropdown. Next, enter <code>po [$arg1 class]</code> in the box below.
+</p>
+<p>Finally, select <em>Automatically continue after evaluating actions</em>. Your popup should look similar to below:
+</p><div class="image-80"><img src="graphics/img14.png"  alt="" title="" /></div>
+<p>Build and run the app. Xcode will dump all the names of the classes it initializes while running the <em>Signals</em> program through the console... which, upon viewing, is quite a lot.
+</p>
+<p>What you’ve done here is set a breakpoint that fires each time <code>-[NSObject init]</code> is called. When the breakpoint fires, a command runs in LLDB, and execution of the program continues automatically.
+</p>
+<div class="note">
+<p><em>Note</em>: You’ll learn how to properly use and manipulate registers in Chapter 10, “Assembly, Registers and Calling Convention”, but for now, simply know <code><em>$arg1</em></code> is synonymous to the <code><em>$rdi</em></code> register and can be loosely thought of as holding the instance of a class when <code>init</code> is called.
+</p></div>
+
+<p>Once you’ve finished inspecting all the class names dumped out, delete the symbolic breakpoint by right-clicking the breakpoint in the breakpoint navigator and selecting <em>Delete Breakpoint</em>.
+</p>
+<p>In addition to symbolic breakpoints, Xcode also supports several types of error breakpoints. One of these is the <em>Exception Breakpoint</em>. Sometimes, something goes wrong in your program and it just simply crashes. When this happens, your first reaction to this should be to enable an exception breakpoint, which will fire every time an exception is thrown. Xcode will show you the offending line, which greatly aids in hunting down the culprit responsible for the crash.
+</p>
+<p>Finally, there is the <em>Swift Error Breakpoint</em>, which stops any time Swift throws an error by essentially creating a breakpoint on the <code>swift_willThrow</code> method. This is a great option to use if you’re working with any APIs that can be error-prone, as it lets you diagnose the situation quickly without making false assumptions about the correctness of your code.
+</p>
+<h2 class="segment-chapter">LLDB breakpoint syntax</h2>
+
+<p>Now that you’ve had a crash course in using the IDE debugging features of Xcode, it’s time to learn how to create breakpoints through the LLDB console. In order to create useful breakpoints, you need to learn how to query what you’re looking for.
+</p>
+<p>The <code>image</code> command is an excellent tool to help introspect details that will be vital for setting breakpoints.
+</p>
+<p>There are two configurations you’ll use in this book for code hunting. The first is the following:
+</p><pre class="code-block">(lldb) image lookup -n &quot;-[UIViewController viewDidLoad]&quot;</pre>
+<p>This command dumps the implementation address (the offset address of where this method is located within the framework&apos;s binary) of the function for <code>-[UIViewController viewDidLoad]</code>. The <code>-n</code> argument tells LLDB to look up either a symbol or function name. The output will be similar to below:
+</p><pre class="code-block">1 match found in /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk//System/Library/Frameworks/UIKit.framework/UIKit:
+        Address: UIKit[0x00000000001c67c8] (UIKit.__TEXT.__text + 1854120)
+        Summary: UIKit`-[UIViewController viewDidLoad]</pre>
+<p>Another useful, similar command is this:
+</p><pre class="code-block">(lldb) image lookup -rn test</pre>
+<p>This does a case-sensitive regex lookup for the word <code>&quot;test&quot;</code>. If the lowercase word <code>&quot;test&quot;</code> is found anywhere, in any function, in any of the modules (i.e. UIKit, Foundation, Core Data, etc) loaded in the current executable (that are not stripped out of a release builds... more on that later), this command will spit out the results.
+</p>
+<div class="note">
+<p><em>Note</em>: Use the <code>-n</code> argument when you want exact matches (with quotes around your query if it contains spaces) and use the <code>-rn</code> arguments to do a regex search. The <code>-n</code> only command helps figure out the exact parameters to match a breakpoint, especially when dealing with Swift, while the <code>-rn</code> argument option will be heavily favored in this book since a smart regex can eliminate quite a bit of typing — as you’ll soon find out.
+</p></div>
+
+<h3 class="segment-chapter">Objective-C properties</h3>
+
+<p>Learning how to query loaded code is essential for learning how to create breakpoints on that code. Both Objective-C and Swift have specific property signatures when they’re created by the compiler, which results in different querying strategies when looking for code.
+</p>
+<p>For example, the following Objective-C class is declared in the Signals project:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">@interface</span> <span class="hljs-title">TestClass</span> : <span class="hljs-title">NSObject</span> </span>
+<span class="hljs-keyword">@property</span> (<span class="hljs-keyword">nonatomic</span>, <span class="hljs-keyword">strong</span>) <span class="hljs-built_in">NSString</span> *name; 
+<span class="hljs-keyword">@end</span></pre>
+<p>The compiler will generate code for both the setter and getter of the property <code>name</code>. The getter will look like the following:
+</p><pre class="code-block">-[TestClass name]</pre>
+<p>...while the setter would look like this:
+</p><pre class="code-block">-[TestClass setName:]</pre>
+<p>Build and run the app, then pause the debugger. Next, verify these methods do exist by typing the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -n &quot;-[TestClass name]&quot;</pre>
+<p>In the console output, you’ll get something similar to below:
+</p><pre class="code-block">1 match found in /Users/derekselander/Library/Developer/Xcode/DerivedData/Signals-atqcdyprrotlrvdanihoufkwzyqh/Build/Products/Debug-iphonesimulator/Signals.app/Signals:
+        Address: Signals[0x0000000100001d60] (Signals.__TEXT.__text + 0)
+        Summary: Signals`-[TestClass name] at TestClass.h:28</pre>
+<p>LLDB will dump information about the function included in the executable. The output may look scary, but there are some good tidbits here.
+</p>
+<div class="note">
+<p><em>Note</em>: The <code>image lookup</code> command can produce a lot of output that can be pretty hard on the eyes when a query matches a lot of code. In Chapter 22, &quot;SB Examples, Improved Lookup&quot;, you&apos;ll build a cleaner alternative to LLDB&apos;s <code>image lookup</code> command to save your eyes from looking at too much output.
+</p></div>
+
+<p>The console output tells you LLDB was able to find out this function was implemented in the Signals executable, at an offset of <code>0x0000000100001d60</code> in the <code>__TEXT</code> segment of the <code>__text</code> section to be exact. LLDB was also able to tell that this method was declared on line 28 in <code>TestClass.h</code>.
+</p>
+<p>You can check for the setter as well, like so:
+</p><pre class="code-block">(lldb) image lookup -n &quot;-[TestClass setName:]&quot;</pre>
+<p>You’ll get output similar to the previous command, this time showing the implementation address and of the setter’s declaration for <code>name</code>.
+</p>
+<h3 class="segment-chapter">Objective-C properties and dot notation</h3>
+
+<p>Something that is often misleading to beginning Objective-C (or Swift only) developers is the Objective-C dot notation syntax for properties.
+</p>
+<p>Objective-C dot notation is a somewhat controversial compiler feature that allows properties to use a shorthand getter or setter.
+</p>
+<p>Consider the following:
+</p><pre class="code-block">TestClass *a = [[TestClass alloc] init];
+
+<span class="hljs-comment">// Both equivalent for setters</span>
+[a setName:<span class="hljs-string">@"hello, world"</span>];
+a.name = <span class="hljs-string">@"hello, world"</span>;
+
+<span class="hljs-comment">// Both equivalent for getters</span>
+<span class="hljs-built_in">NSString</span> *b; 
+b = [a name]; <span class="hljs-comment">// b = @"hello, world"</span>
+b = a.name;   <span class="hljs-comment">// b = @"hello, world"</span></pre>
+<p>In the above example, the <code>-[TestClass setName:]</code> method is called twice, even with the dot notation. The same can be said for the getter, <code>-[TestClass name]</code>. This is important to know if you&apos;re dealing with Objective-C code and trying to create breakpoints on the setters and getters of properties with dot notation.
+</p>
+<h3 class="segment-chapter">Swift properties</h3>
+
+<p>The syntax for a property is much different in Swift. Take a look at the code in <em>SwiftTestClass.swift</em> which contains the following:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">SwiftTestClass</span>: <span class="hljs-title">NSObject</span> </span>{
+  <span class="hljs-keyword">var</span> name: <span class="hljs-type">String</span>!
+}</pre>
+<p>Make sure the <em>Signals</em> project is running and paused in LLDB. Feel free to clear the LLDB console by typing <em>Command + K</em> in the debug window to start fresh.
+</p>
+<p>In the LLDB console, type the following:
+</p><pre class="code-block">(lldb) image lookup -rn Signals.SwiftTestClass.name.setter</pre>
+<p>You’ll get output similar to below:
+</p><pre class="code-block">1 match found in /Users/derekselander/Library/Developer/Xcode/DerivedData/Signals-atqcdyprrotlrvdanihoufkwzyqh/Build/Products/Debug-iphonesimulator/Signals.app/Signals:
+        Address: Signals[0x000000010000cc70] (Signals.__TEXT.__text + 44816)
+        Summary: Signals`Signals.SwiftTestClass.name.setter : Swift.ImplicitlyUnwrappedOptional&lt;Swift.String&gt; at SwiftTestClass.swift:28</pre>
+<p>Hunt for the information after the word <em>Summary</em> in the output. There are a couple of interesting things to note here.
+</p>
+<p>Do you see how long the function name is!? This whole thing needs to be typed out for <i>one</i> valid Swift breakpoint! If you wanted to set a breakpoint on this setter, you’d have to type the following:
+</p><pre class="code-block">(lldb) b Signals.SwiftTestClass.name.setter : Swift.ImplicitlyUnwrappedOptional&lt;Swift.String&gt;</pre>
+<p>Using regular expressions is an attractive alternative to typing out this monstrosity.
+</p>
+<p>Apart from the length of the Swift function name you produced, note how the Swift property is formed. The function signature containing the property <code>name</code> has the word <code>setter</code> immediately following the property. Perhaps the same convention works for the getter method as well?
+</p>
+<p>Search for the <code>SwiftTestClass</code> setter and getter for the <code>name</code> property, at the same time, using the following regular expression query:
+</p><pre class="code-block">(lldb) image lookup -rn Signals.SwiftTestClass.name</pre>
+<p>This uses a regex query to dump everything that contains the phrase <code>Signals.SwiftTestClass.name</code>.
+</p>
+<p>Since this is a regular expression, the periods (<code>.</code>) are evaluated as wildcards, which in turn matches periods in the actual function signatures.
+</p>
+<p>You’ll get a fair bit of output, but hone in every time you see the word <em>Summary</em> in the console ouput. You’ll find the output matches the getter, (<code>Signals.SwiftTestClass.name.getter</code>) the setter, (<code>Signals.SwiftTestClass.name.setter</code>), as well as two methods containing <code>materializeForSet</code>, helper methods for Swift constructors.
+</p>
+<p>There’s a pattern for the function names for Swift properties:
+</p>
+<p><code>ModuleName.Classname.PropertyName.(getter|setter)</code>
+</p>
+<p>The ability to dump methods, find a pattern, and narrow your search scope is a great way to uncover the Swift/Objective-C language internals as you work to create smart breakpoints in your code.
+</p>
+<h2 class="segment-chapter">Finally... creating breakpoints</h2>
+
+<p>Now you know how to query the existence of functions and methods in your code, it’s time to start creating breakpoints on them.
+</p>
+<p>If you already have the Signals app running, stop and restart the application, then press the pause button to stop the application and bring up the LLDB console.
+</p>
+<p>There are several different ways to create breakpoints. The most basic way is to simply type the letter <em>b</em> followed by the name of your breakpoint. This is fairly easy in Objective-C and C, since the names are short and easy to type (e.g. <code>-[NSObject init]</code> or <code>-[UIView setAlpha:]</code>). They’re quite tricky to type in C++ and Swift, since the compiler turns your methods into symbols with rather long names.
+</p>
+<p>Since UIKit is primarily Objective-C (at the time of this writing at least!), create a breakpoint using the <code>b</code> argument, like so:
+</p><pre class="code-block">(lldb) b -[UIViewController viewDidLoad]</pre>
+<p>You’ll see the following output:
+</p><pre class="code-block">Breakpoint 1: where = UIKit`-[UIViewController viewDidLoad], address = 0x0000000102bbd788</pre>
+<p>When you create a valid breakpoint, the console will spit out some information about that breakpoint. In this particular case, the breakpoint was created as <em>Breakpoint 1</em> since this was the first breakpoint in this particular debugging session. As you create more breakpoints, this breakpoint ID will increment.
+</p>
+<p>Resume the debugger. Once you’ve resumed execution, a new <code>SIGSTOP</code> signal will be displayed. Tap on the cell to bring up the detail <code>UIViewController</code>. The program should pause when <code>viewDidLoad</code> of the detail view controller is called.
+</p>
+<div class="note">
+<p><em>Note</em>: Like a lot of shorthand commands, <code>b</code> is an abbreviation for another, longer LLDB command. Try running <code>help</code> with the <code>b</code> command to figure out the actual command yourself and learn all the cool tricks <code>b</code> can do under the hood.
+</p></div>
+
+<p>In addition to the <code>b</code> command, there’s another longer <code>breakpoint set</code> command, which has a slew of options available. You’ll explore these options over the next couple of sections. Many of the commands will stem from various options of the <code>breakpoint set</code> command.
+</p>
+<h3 class="segment-chapter">Regex breakpoints and scope</h3>
+
+<p>Another extremely powerful command is the regular expression breakpoint, <code>rbreak</code>, which is an abbreviation for <code>breakpoint set -r %1</code>. You can quickly create many breakpoints using smart regular expressions to stop wherever you want.
+</p>
+<p>Going back to the previous example with the egregiously long Swift property function names, instead of typing:
+</p><pre class="code-block">(lldb) b Breakpoints.SwiftTestClass.name.setter : Swift.ImplicitlyUnwrappedOptional&lt;Swift.String&gt;</pre>
+<p>You can simply type:
+</p><pre class="code-block">(lldb) rb SwiftTestClass.name.setter</pre>
+<p>The <code>rb</code> command will get expanded out to <code>rbreak</code> (provided you don&apos;t have any other LLDB commands that begin with &quot;rb&quot;). This will create a breakpoint on the setter property of <code>name</code> in <code>SwiftTestClass</code>
+</p>
+<p>To be even more brief, you could simply use the following:
+</p><pre class="code-block">(lldb) rb name\.setter</pre>
+<p>This will produce a breakpoint on anything that contains the phrase <code>name.setter</code>. This will work if you know you don’t have any other Swift properties called <code>name</code> within your project; otherwise you’ll create multiple breakpoints for each class that contains a &quot;name&quot; property that has a setter.
+</p>
+<p>Let&apos;s up the complexity of these regular expressions.
+</p>
+<p>Create a breakpoint on every Objective-C instance method of <code>UIViewController</code>. Type the following into your LLDB session:
+</p><pre class="code-block">(lldb) rb &apos;\-\[UIViewController\ &apos; </pre>
+<p>The ugly back slashes are escape characters to indicate you want the literal character to be in the regular expression search. As a result, this query breaks on every method containing the string <code>-[UIViewController</code> followed by a space.
+</p>
+<p>But wait... what about Objective-C categories? They take on the form of <code>(-|+)[ClassName(categoryName) method]</code>. You’ll have to rewrite the regular expression to include categories as well.
+</p>
+<p>Type the following into your LLDB session and when prompted type <code>y</code> to confirm:
+</p><pre class="code-block">(lldb) breakpoint delete</pre>
+<p>This command deletes all the breakpoints you have set.
+</p>
+<p>Next, type the following:
+</p><pre class="code-block">(lldb) rb &apos;\-\[UIViewController(\(\w+\))?\ &apos;</pre>
+<p>This provides an optional parenthesis with one or more alphanumeric characters followed by a space, after <code>UIViewController</code> in the breakpoint.
+</p>
+<p>Regex breakpoints let you capture a wide variety of breakpoints with a single expression.
+</p>
+<p>You can limit the scope of your breakpoints to a certain file, using the <code>-f</code> option. For example, you could type the following:
+</p><pre class="code-block">(lldb) rb . -f DetailViewController.swift</pre>
+<p>This would be useful if you were debugging <em>DetailViewController.swift</em>. It would set a breakpoint on all the property getters/setters, blocks/closures, extensions/categories, and functions/methods in this file. <code>-f</code> is known as a <em>scope limitation</em>.
+</p>
+<p>If you were completely crazy and a fan of pain (the doctors call that masochistic?), you could omit the scope limitation and simply do this:
+</p><pre class="code-block">(lldb) rb . </pre>
+<p>This will create a breakpoint on everything... Yes, everything! This will create breakpoints on all the code in the <em>Signals</em> project, all the code in UIKit as well as Foundation, all the event run loop code that gets fired at (hopefully) 60 hertz — everything. As a result, expect to type <code>continue</code> in the debugger a fair bit if you execute this.
+</p>
+<p>There are other ways to limit the scope of your searches. You can limit to a single library using the <code>-s</code> option:
+</p><pre class="code-block">(lldb) rb . -s Commons </pre>
+<p>This would set a breakpoint on everything within the <code>Commons</code> library, which is a dynamic library contained within the <em>Signals</em> project.
+</p>
+<p>This is not limited to your code; you can use the same tactic to create a breakpoint on every function in UIKit, like so:
+</p><pre class="code-block">(lldb) rb . -s UIKit</pre>
+<p>Even <i>that</i> is still a little crazy. There are a lot of methods — around 86,577 UIKit methods in iOS 11.0. How about only stopping on the first method in UIKit you hit, and simply continue? The <code>-o</code> option offers a solution for this. It creates what is known as a “one-shot” breakpoint. When these breakpoints hit, the breakpoint is deleted. So it’ll only ever hit once.
+</p>
+<p>To see this in action, type the following in your LLDB session:
+</p><pre class="code-block">(lldb) breakpoint delete 
+(lldb) rb . -s UIKit -o </pre>
+<div class="note">
+<p><em>Note</em>: Be patient while your computer executes this command, as LLDB has to create a lot of breakpoints. Also make sure you are using the Simulator, or else you’ll wait for a very long time!
+</p></div>
+
+<p>Next, continue the debugger, and click on a cell in the table view. The debugger stops on the first UIKit method this action calls. Finally, continue the debugger, and the breakpoint will no longer fire.
+</p>
+<h3 class="segment-chapter">Other cool breakpoint options</h3>
+
+<p>The <code>-L</code> option lets you filter by source language. So, if you wanted to only go after Swift code in the <code>Commons</code> module of the Signals application, you could do the following:
+</p><pre class="code-block">(lldb) breakpoint set -L swift -r . -s Commons</pre>
+<p>This would set a breakpoint on every Swift method within the Commons module.
+</p>
+<p>What if you wanted to go after something interesting around a Swift <code>if let</code> but totally forgot where in your application it is? You can use <em>source regex breakpoints</em> to help figure locations of interest! Like so:
+</p><pre class="code-block">(lldb) breakpoint set -A -p &quot;if let&quot; </pre>
+<p>This will create a breakpoint on every source code location that contains <code>if let</code>. You can of course get waaaaaay more fancy since the <code>-p</code> takes a regular expression breakpoint to go after complicated expressions. The <code>-A</code> option says to search in all source files known to the project.
+</p>
+<p>If you wanted to filter the above breakpoint query to only <code>MasterViewController.swift</code> and <code>DetailViewController.swift</code>, you could do the following:
+</p><pre class="code-block">(lldb) breakpoint set -p &quot;if let&quot; -f MasterViewController.swift -f DetailViewController.swift</pre>
+<p>Notice how the <code>-A</code> has gone, and how each <code>-f</code> will let you specify a filename. I am lazy, so I&apos;ll usually default to <code>-A</code> to give me all files and drill in from there.
+</p>
+<p>Finally, you can also filter by a specific module as well. If you wanted to create a breakpoint for &quot;if let&quot; for anything in the <code>Signals</code> executable (while ignoring other frameworks like Commons), you could do this:
+</p><pre class="code-block">(lldb) breakpoint set -p &quot;if let&quot; -s Signals -A</pre>
+<p>This will grab all source files (<code>-A</code>), but filter those to only the ones that belong to the <code>Signals</code> executable (with the <code>-s Signals</code> option).
+</p>
+<p>One more cool breakpoint option example? OK, you talked me into it. Let&apos;s ramp up the complexity a little bit and make an “advanced” breakpoint.
+</p>
+<p>What if you wanted to set a breakpoint on <code>-[UIView setTintColor:]</code> but only stop if the method was called from code implemented inside the Signals executable?
+</p>
+<p>There&apos;s several ways to accomplish this, but here&apos;s a creative way to do this using <em>breakpoint conditions</em>, or the <code>-c</code> option.
+</p>
+<p>First, you need to figure out the upper and lower bounds of where the code in the Signals executable resides in memory. Typically, code is located in the <code>__text</code> section of the <code>__TEXT</code> segment. Don&apos;t worry about the specifics of what this means for now, we&apos;ll get into the gory details of the <code>Mach-O</code> file format in a later chapter. For now, just think of the <code>__TEXT</code> segment as a grouping of readable and executable code that every executable and framework has.
+</p>
+<p>You can use LLDB to dump the contents of the Mach-O segments and sections in the Signals executable with the following LLDB command:
+</p><pre class="code-block">(lldb) image dump sections Signals</pre>
+<p>Grab the upper and lower bounds of the <code>__TEXT</code> segment because the actual executable code will reside in these address bounds.
+</p><div class="image-100"><img src="graphics/img15.png"  alt="" title="" /></div>
+<p>For my case, this address range begins at <code>0x0000000108056000</code> and ends at <code>0x0000000108067000</code> (yours will be different). Therefore, I can use the following breakpoint to only stop if <code>-[UIView setTintColor:]</code> is called from any code in the Signals executable.
+</p><pre class="code-block">(lldb) breakpoint set -n &quot;-[UIView setTintColor:]&quot; -c &quot;*(uintptr_t*)$rsp &lt;= 0x0000000108067000 &amp;&amp; *(uintptr_t*)$rsp &gt;= 0x0000000108056000&quot;</pre>
+<p>This is using knowledge of the x86_64 calling convention (this will only work in 64-bit iOS Simulators) with how the stack pointer register works when a function gets called. We won&apos;t get into the details of how this works yet, but a quick summary is that in x86_64 assembly, right after a function gets called, the stack pointer will contain a pointer to the return address to where the function was called. You&apos;ll take an uncomfortably deep dive into the stack pointer register and base pointer register in Chapter 12, “Assembly and the Stack”.
+</p>
+<p>There&apos;s one final thing you must do for this breakpoint strategy to work. Typically, if you create a breakpoint, LLDB will skip a couple of assembly instructions in the beginning of a function that helps set up the logic (known as the function prologue). When this happens, the head of the stack pointer will no longer contain a pointer to the return address (the head will point to something new). This means you need to tell LLDB to stop right at the beginning before those setup assembly instructions occur.  You can do this with the following command:
+</p><pre class="code-block">(lldb) settings set target.skip-prologue false</pre>
+<p>In a later chapter, I&apos;ll make you save this setting into the LLDB initialization file (<code>~/.lldbinit</code>) since it&apos;s rather useful for exploring parameters passed into a function. If none of this makes any sense at the moment, don’t worry — you’ll get there!
+</p>
+<h3 class="segment-chapter">Modifying and removing breakpoints</h3>
+
+<p>Now that you have a basic understanding of how to create these breakpoints, you might be wondering how you can alter them. What if you found the object you were interested in and wanted to delete the breakpoint, or temporarily disable it? What if you need to modify the breakpoint to perform a specific action next time it triggers?
+</p>
+<p>First, you’ll need to discover how to uniquely identify a breakpoint or a group of breakpoints. You can also name breakpoints when you create then using the <code>-N</code> option... if working with numbers is not really your thing.
+</p>
+<p>Build and run the app to get a clean LLDB session. Next, pause the debugger and type the following into the LLDB session:
+</p><pre class="code-block">(lldb) b main</pre>
+<p>The output will look something like this:
+</p><pre class="code-block">Breakpoint 1: 70 locations.</pre>
+<p>This creates a breakpoint with 70 locations, matching the function <code>&quot;main&quot;</code> in various modules.
+</p>
+<p>In this case, the breakpoint ID is 1, because it’s the first breakpoint you created in this session. To see details about this breakpoint you can use the <code>breakpoint list</code> subcommand. Type the following:
+</p><pre class="code-block">(lldb) breakpoint list 1</pre>
+<p>The output will look similar to the truncated output below:
+</p><pre class="code-block">1: name = &apos;main&apos;, locations = 70, resolved = 70, hit count = 0
+  1.1: where = Signals`main at AppDelegate.swift, address = 0x00000001098b1520, resolved, hit count = 0 
+  1.2: where = Foundation`-[NSThread main], address = 0x0000000109bfa9e3, resolved, hit count = 0 
+  1.3: where = Foundation`-[NSBlockOperation main], address = 0x0000000109c077d6, resolved, hit count = 0 
+  1.4: where = Foundation`-[NSFilesystemItemRemoveOperation main], address = 0x0000000109c40e99, resolved, hit count = 0 
+  1.5: where = Foundation`-[NSFilesystemItemMoveOperation main], address = 0x0000000109c419ee, resolved, hit count = 0 
+  1.6: where = Foundation`-[NSInvocationOperation main], address = 0x0000000109c6aee4, resolved, hit count = 0 
+  1.7: where = Foundation`-[NSDirectoryTraversalOperation main], address = 0x0000000109caefa6, resolved, hit count = 0 
+  1.8: where = Foundation`-[NSOperation main], address = 0x0000000109cfd5e3, resolved, hit count = 0 
+  1.9: where = Foundation`-[_NSFileAccessAsynchronousProcessAssertionOperation main], address = 0x0000000109d55ca9, resolved, hit count = 0 
+  1.10: where = UIKit`-[_UIFocusFastScrollingTest main], address = 0x000000010b216598, resolved, hit count = 0 
+  1.11: where = UIKit`-[UIStatusBarServerThread main], address = 0x000000010b651e97, resolved, hit count = 0 
+  1.12: where = UIKit`-[_UIDocumentActivityDownloadOperation main], address = 0x000000010b74f718, resolved, hit count = 0 </pre>
+<p>This shows the details of that breakpoint, including all locations that include the word <code>&quot;main&quot;</code>.
+</p>
+<p>A cleaner way to view this is to type the following:
+</p><pre class="code-block">(lldb) breakpoint list 1 -b </pre>
+<p>This will give you output that is a little easier on the visual senses. If you have a breakpoint ID that encapsulates a lot of breakpoints, this brief flag is a good solution.
+</p>
+<p>If you want to query all the breakpoints in your LLDB session, simply omit the ID like so:
+</p><pre class="code-block">(lldb) breakpoint list </pre>
+<p>You can also specify multiple breakpoint IDs and ranges:
+</p><pre class="code-block">(lldb) breakpoint list 1 3 
+(lldb) breakpoint list 1-3</pre>
+<p>Using <code>breakpoint delete</code> to delete all breakpoints is a bit heavy-handed. You can simply use the same ID pattern used in the breakpoint list command to delete a set.
+</p>
+<p>You can delete a single breakpoint by specifying the ID like so:
+</p><pre class="code-block">(lldb) breakpoint delete 1</pre>
+<p>However, your breakpoint for <code>&quot;main&quot;</code> had 70 locations (maybe more or less depending on the iOS version). You can also delete a single location, like so:
+</p><pre class="code-block">(lldb) breakpoint delete 1.1 </pre>
+<p>This would delete the first sub-breakpoint of breakpoint 1, which results in only one <code>main</code> function breakpoint removed while keeping the remaining <code>main</code> breakpoints active.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>You’ve covered a lot in this chapter. Breakpoints are a big topic and mastering the art of quickly finding an item of interest is essential to becoming a debugging expert. You’ve also started exploring function searching using regular expressions. Now would be a great time to brush up on regular expression syntax, as you’ll be using lots of regular expressions in the rest of this book.
+</p>
+<p>Check out <a href="https://docs.python.org/2/library/re.html">https://docs.python.org/2/library/re.html</a> to learn (or relearn) regular expressions. Try figuring out how to make a case-insensitive breakpoint query.
+</p>
+<p>You’ve only begun to discover how the compiler generates functions in Objective-C and Swift. Try to figure out the syntax for stopping on Objective-C blocks or Swift closures. Once you’ve done that, try to design a breakpoint that only stops on Objective-C blocks within the Commons framework of the <em>Signals</em> project. These are regex skills you’ll need in the future to construct ever more complicated breakpoints.
+</p></body></html>

@@ -1,0 +1,351 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 15: Hooking &amp; Executing Code with dlopen &amp; dlsym</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 15: Hooking &amp; Executing Code with dlopen &amp; dlsym</h1>
+
+<p>Using LLDB, you’ve seen how easy it is to create breakpoints and inspect things of interest. You’ve also seen how to create classes you wouldn’t normally have access to. You’ve been unable to wield this power at development time because you can’t get a public API if the framework, or any of its classes or methods, are marked as private. However, all that is about to change.
+</p>
+<p>It’s time to learn about the complementary skills of developing with these frameworks. In this chapter, you’re going to learn about methods and strategies to “hook” into Swift and C code as well as execute methods you wouldn’t normally have access to.
+</p>
+<p>This is a critical skill to have when you’re working with something such as a private framework and want to execute or augment existing code within your own application. To do this, you’re going to call on the help of two awesome and special functions: <code><em>dlopen</em></code> and <code><em>dlsym</em></code>.
+</p>
+<h2 class="segment-chapter">The Objective-C runtime vs. Swift &amp; C</h2>
+
+<p>Objective-C, thanks to its powerful runtime, is a truly dynamic language. Even when compiled and running, not even the program knows what will happen when the next <code>objc_msgSend</code> comes up.
+</p>
+<p>There are different strategies for hooking into and executing Objective-C code; you’ll explore these in the next chapter. This chapter focuses on how to hook into and use these frameworks under Swift.
+</p>
+<p>Swift acts a lot like C or C++. If it doesn’t need the dynamic dispatch of Objective-C, the compiler doesn’t have to use it. This means when you’re looking at the assembly for a Swift method that doesn’t need dynamic dispatch, the assembly can simply call the address containing the method. This “direct” function calling is where the <code>dlopen</code> and <code>dlsym</code> combo really shines. This is what you’re going to learn about in this chapter.
+</p>
+<h2 class="segment-chapter">Setting up your project</h2>
+
+<p>For this chapter, you’re going to use a starter project named <em>Watermark</em>, located in the <em>starter</em> folder.
+</p>
+<p>This project is very simple. All it does is display a watermarked image in a <code>UIImageView</code>.
+</p><div class="image-30"><img src="graphics/img75.png"  alt="" title="" /></div>
+<p>However, there’s something special about this watermarked image. The actual image displayed is hidden away in an array of bytes compiled into the program. That is, the image is not bundled as a separate file inside the application. Rather, the image is actually located within the executable itself. Clearly the author didn’t want to hand out the original image, anticipating people would reverse engineer the <em>Assets.car</em> file, which typically is a common place to hold images within an application.
+</p>
+<p>First, you’ll explore hooking into a common C function. Once you’ve mastered the concepts, you’ll execute a hidden function that’s unavailable to you at development time thanks to the Swift compiler. Using <code>dlopen</code> and <code>dlsym</code>, you’ll be able to call and execute a private method inside a framework with zero modifications to the framework’s code.
+</p>
+<p>Now that you’ve got more theory than you’ve ever wanted in an introduction, it’s finally time to get started.
+</p>
+<h2 class="segment-chapter">Easy mode: hooking C functions</h2>
+
+<p>When learning how to use the <code>dlopen</code> and <code>dlsym</code> functions, you’ll be going after the <code>getenv</code> C function. This simple C function takes a <code>char *</code> (null terminated string) for input and returns the environment variable for the parameter you supply.
+</p>
+<p>This function is actually called quite a bit when your executable starts up.
+</p>
+<p>Open and launch the <em>Watermark</em> project in Xcode. Create a new symbolic breakpoint, putting <code>getenv</code> in the <em>Symbol</em> section. Next, add a custom action with the following:
+</p><pre class="code-block">po (char *)$rdi</pre>
+<p>Now, make sure the execution automatically continues after the breakpoint hits.
+</p><div class="image-60"><img src="graphics/img76.png"  alt="" title="" /></div>
+<p>Finally, build and run the application on the iPhone X Simulator, then watch the console. You’ll get a slew of output indicating this method is called quite frequently. It’ll look similar to the following:
+</p><pre class="code-block">&quot;DYLD_INSERT_LIBRARIES&quot;
+&quot;NSZombiesEnabled&quot;
+&quot;OBJC_DEBUG_POOL_ALLOCATION&quot;
+&quot;MallocStackLogging&quot;
+&quot;MallocStackLoggingNoCompact&quot;
+&quot;OBJC_DEBUG_MISSING_POOLS&quot;
+&quot;LIBDISPATCH_DEBUG_QUEUE_INVERSIONS&quot;
+&quot;LIBDISPATCH_CONTINUATION_ALLOCATOR&quot;
+... etc ...</pre>
+<div class="note">
+<p><em>Note</em>: A far more elegant way to dump all environment variables available to your application is to use the <code>DYLD_PRINT_ENV</code>. To set this up, go to <em>Product</em><em>\</em><em>Manage Scheme</em>, and then add this in the <code>Environment</code> variables section. You can simply add the name, <em>DYLD</em><em>_</em><em>PRINT</em><em>_</em><em>ENV</em>, with no value, to dump out all environment variables at runtime.
+</p></div>
+
+<p>However, an important point to note is all these calls to <code>getenv</code> are happening before your executable has even started. You can verify this by putting a breakpoint on <code>getenv</code> and looking at the stack trace. Notice <code>main</code> is nowhere in sight. This means you’ll not be able to alter these function calls unless you declare an alternative <code>getenv</code> function before <code>dyld</code> loads the frameworks.
+</p>
+<p>Since C doesn’t use dynamic dispatch, hooking a function requires you to intercept the function before it’s loaded. On the plus side, C functions are relatively easy to grab. All you need is the name of the C function without any parameters along with the name of the dynamic framework in which the C function is implemented.
+</p>
+<p>However, since C is all-powerful and used pretty much everywhere, there are different tactics of varying complexity you can explore to hook a C function. If you want to hook a C function inside your own executable, that’s not a lot of work. However, if you want to hook a function called before your code (main executable or frameworks) is loaded in by <code>dyld</code>, the complexity definitely goes up a notch.
+</p>
+<p>As soon as your executable executes <code>main</code>, it’s already imported all the dynamic frameworks specified in the load commands, as you learned in the previous chapter. The dynamic linker will recursively load frameworks in a depth-first manner. If you are call an external framework, it can be lazily loaded or immediately loaded upon module load by <code>dyld</code>. Typically, most external functions are lazily loaded unless you specify special linker flags. With lazily loaded functions, the first time the function is called, a flurry of activity occurs as <code>dyld</code> finds the module and location responsible for the function. This value is then put into a specific <code>section</code> in memory (<code>__DATA.__la_symbol_ptr</code>, but we&apos;ll talk about that later). Once the external function is resolved, all future calls to that function will not need to be resolved by <code>dyld</code>.
+</p>
+<p>This means if you want to have the function hooked before your application starts up, you’ll need to create a dynamic framework to put the hooking logic in so it’ll be available before the <code>main</code> function is called. You’ll explore this easy case of hooking a C function inside your own executable first.
+</p>
+<p>Back to the <code>Watermarks</code> project!
+</p>
+<p>Open <em>AppDelegate.swift</em>, and replace <code>application(_:didFinishLaunchingWithOptions:)</code> with the following:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">application</span><span class="hljs-params">(<span class="hljs-number">_</span> application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplicationLaunchOptionsKey : Any]? = <span class="hljs-literal">nil</span>)</span></span> -&gt; <span class="hljs-type">Bool</span> {
+  <span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> cString = getenv(<span class="hljs-string">"HOME"</span>) {
+    <span class="hljs-keyword">let</span> homeEnv = <span class="hljs-type">String</span>(cString: cString)
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">"HOME env: <span class="hljs-subst">\(homeEnv)</span>"</span>)
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-literal">true</span>
+}</pre>
+<p>This creates a call to <code>getenv</code> to get the <code>HOME</code> environment variable.
+</p>
+<p>Next, remove the symbolic <code>getenv</code> breakpoint you previously created and build and run the application.
+</p>
+<p>The console output will look similar to the following:
+</p><pre class="code-block">HOME env: /Users/derekselander/Library/Developer/CoreSimulator/Devices/D0576CB9-42E1-494B-B626-B4DB75411700/data/Containers/Data/Application/AAC2D01C-045D-4384-B09E-1A83885D69FD</pre>
+<p>This is the <code>HOME</code> environment variable set for the Simulator you’re running on.
+</p>
+<p>Say you wanted to hook the <code>getenv</code> function to act completely normally, but return something different to the output above if and only if <code>HOME</code> is the parameter.
+</p>
+<p>As mentioned earlier, you’ll need to create a framework that’s relied upon by the <code>Watermark</code> executable to grab that address of <code>getenv</code> and change it before it’s resolved in the main executable.
+</p>
+<p>In Xcode, navigate to <em>File ▸ New ▸ Target</em> and select <em>Cocoa Touch Framework</em>. Choose <em>HookingC</em> as the product name, and set the language to <em>Objective-C</em>.
+</p><div class="image-55"><img src="graphics/img77.png"  alt="" title="" /></div>
+<p>Once this new framework is created, create a new C file. In Xcode, select <em>File</em><em>\</em><em>New</em><em>\</em><em>File</em>, then select <em>C file</em>. Name this file <em>getenvhook</em>. Uncheck the checkbox for <em>Also create a header file</em>. Save the file with the rest of the project.
+</p><div class="image-55"><img src="graphics/img78.png"  alt="" title="" /></div>
+<p>Make sure this file belongs to the <em>HookingC</em> framework that you’ve just created, and <em>not</em> <em>Watermark</em>.
+</p><div class="image-60"><img src="graphics/img79.png"  alt="" title="" /></div>
+<p>Okay... you’re finally about to write some code... I swear.
+</p>
+<p>Open <em>getenvhook.c</em> and replace its contents with the following:
+</p><pre class="code-block"><span class="hljs-meta">#import <span class="hljs-meta-string">&lt;dlfcn.h&gt;</span></span>
+<span class="hljs-meta">#import <span class="hljs-meta-string">&lt;assert.h&gt;</span></span>
+<span class="hljs-meta">#import <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#import <span class="hljs-meta-string">&lt;dispatch/dispatch.h&gt;</span></span>
+<span class="hljs-meta">#import <span class="hljs-meta-string">&lt;string.h&gt;</span></span></pre>
+<ul>
+<li>
+<p><code>dlfcn.h</code> will be responsible for two very interesting functions: <code>dlopen</code> and <code>dlsym</code>.
+</p></li>
+
+<li>
+<p><code>assert.h</code> will test the library containing the real <code>getenv</code> is correctly loaded.
+</p></li>
+
+<li>
+<p><code>stdio.h</code> will be used temporarily for a C <code>printf</code> call.
+</p></li>
+
+<li>
+<p><code>dispatch.h</code> will be used to to properly set up the logic for GCD’s <code>dispatch_once</code> function.
+</p></li>
+
+<li>
+<p><code>string.h</code> will be used for the <code>strcmp</code> function, which compares two C strings.
+</p></li>
+</ul>
+
+<p>Next, redeclare the <code>getenv</code> function with the hard-coded stub shown below:
+</p><pre class="code-block"><span class="hljs-keyword">char</span> * getenv(<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *name) {
+  <span class="hljs-keyword">return</span> <span class="hljs-string">"YAY!"</span>;
+}</pre>
+<p>Finally, build and run your application to see what happens. You’ll get the following output:
+</p><pre class="code-block">HOME env: YAY!</pre>
+<p>Awesome! You were able to successfully replace this method with your own function. However, this isn’t quite what you want. You want to call the original <code>getenv</code> function and augment the return value if <code>&quot;HOME&quot;</code> is supplied as input.
+</p>
+<p>What would happen if you tried to call the original <code>getenv</code> function inside your <code>getenv</code> function? Try it out and see what happens. Add some temporary code so the <code>getenv</code> looks like the following:
+</p><pre class="code-block"><span class="hljs-keyword">char</span> * getenv(<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *name) {
+  <span class="hljs-keyword">return</span> getenv(name);    
+  <span class="hljs-keyword">return</span> <span class="hljs-string">"YAY!"</span>;
+}</pre>
+<p>Your program will... sort of... run and then eventually crash. This is because you’ve just created a stack overflow. All references to the previously linked <code>getenv</code> have disappeared now that you’ve created your own <code>getenv</code> fuction.
+</p>
+<p>Undo that previous line of code. That idea won’t work. You’re going to need a different tactic to grab the original <code>getenv</code> function.
+</p>
+<p>First things first though, you need to figure out which library holds the <code>getenv</code> function. Make sure that problematic line of code is removed, and build and run the application again. Pause execution and bring up the LLDB console. Once the console pops up, enter the following:
+</p><pre class="code-block">(lldb) image lookup -s getenv</pre>
+<p>You’ll get output looks similar to the following:
+</p><pre class="code-block">1 symbols match &apos;getenv&apos; in /Users/derekselander/Library/Developer/Xcode/DerivedData/Watermark-frqludlofnmrzcbjnkmuhgeuogmp/Build/Products/Debug-iphonesimulator/Watermark.app/Frameworks/HookingC.framework/HookingC:
+        Address: HookingC[0x0000000000000f60] (HookingC.__TEXT.__text + 0)
+        Summary: HookingC`getenv at getenvhook.c:16
+1 symbols match &apos;getenv&apos; in /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk//usr/lib/system/libsystem_c.dylib:
+        Address: libsystem_c.dylib[0x000000000005f1c4] (libsystem_c.dylib.__TEXT.__text + 385956)
+        Summary: libsystem_c.dylib`getenv</pre>
+<p>You’ll get two hits. One of them will be the <code>getenv</code> function you created yourself. More importantly, you’ll get the location of the <code>getenv</code> function you actually care about. It looks like this function is located in <em>libsystem</em><em>_</em><em>c.dylib</em>, and its full path is at <code>/usr/lib/system/libsystem_c.dylib</code>. Remember, the simulator prepends that big long path to these directories, but the dynamic linker is smart enough to search in the correct areas. Everything after <code>iPhoneSimulator.sdk</code> is where this framework is actually stored on a real iOS device.
+</p>
+<p>Now you know exactly where this function is loaded, it’s time to whip out the first of the amazing “dl” duo, <code>dlopen</code>. Its function signature looks like the following:
+</p><pre class="code-block"><span class="hljs-keyword">extern</span> <span class="hljs-keyword">void</span> * dlopen(<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> * __path, <span class="hljs-keyword">int</span> __mode);</pre>
+<p><code>dlopen</code> expects a fullpath in the form of a <code>char *</code> and a second parameter, which is a mode expressed as an integer that determines how <code>dlopen</code> should load the module. If successful, <code>dlopen</code> returns an opaque handle (a <code>void *</code>) ,or <code>NULL</code> if it fails.
+</p>
+<p>After <code>dlopen</code> (hopefully) returns a reference to the module, you’ll use <code>dlsym</code> to get a reference to the <code>getenv</code> function. <code>dlsym</code> has the following function signature:
+</p><pre class="code-block"><span class="hljs-keyword">extern</span> <span class="hljs-keyword">void</span> * dlsym(<span class="hljs-keyword">void</span> * __handle, <span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> * __symbol);</pre>
+<p><code>dlsym</code> expects to take the reference generated by <code>dlopen</code> as the first parameter and the name of the function as the second parameter. If everything goes well, <code>dlsym</code> will return the function address for the symbol specified in the second parameter or <code>NULL</code> if it failed.
+</p>
+<p>Replace your <code>getenv</code> function with the following:
+</p><pre class="code-block"><span class="hljs-keyword">char</span> * getenv(<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *name) {
+  <span class="hljs-keyword">void</span> *handle = dlopen(<span class="hljs-string">"/usr/lib/system/libsystem_c.dylib"</span>, RTLD_NOW);
+  assert(handle);
+  <span class="hljs-keyword">void</span> *real_getenv = dlsym(handle, <span class="hljs-string">"getenv"</span>);
+  printf(<span class="hljs-string">"Real getenv: %p\nFake getenv: %p\n"</span>, real_getenv, getenv);
+  <span class="hljs-keyword">return</span> <span class="hljs-string">"YAY!"</span>;
+}</pre>
+<p>You used the <code>RTLD_NOW</code> mode of <code>dlopen</code> to say, “Hey, don’t wait or do any cute lazy loading stuff. Open this module right now.” After making sure the handle is not <code>NULL</code> through a C <code>assert</code>, you call <code>dlsym</code> to get a handle on the “real” <code>getenv</code>.
+</p>
+<p>Build and run the application. You’ll get output similar to the following:
+</p><pre class="code-block"><span class="hljs-type">Real</span> getenv: <span class="hljs-number">0x10d2451c4</span>
+<span class="hljs-type">Fake</span> getenv: <span class="hljs-number">0x10a8f7de0</span>
+<span class="hljs-number">2016</span>-<span class="hljs-number">12</span>-<span class="hljs-number">19</span> <span class="hljs-number">16</span>:<span class="hljs-number">51</span>:<span class="hljs-number">30.650</span> <span class="hljs-type">Watermark</span>[<span class="hljs-number">1035</span>:<span class="hljs-number">19708</span>] <span class="hljs-type">HOME</span> env: <span class="hljs-type">YAY</span>!</pre>
+<p>Your function pointers will be different than my output, but take note of the difference in address between the real and fake <code>getenv</code>.
+</p>
+<p>You’re starting to see how you’ll go about this. However, you’ll need to make a few touch-ups to the above code first. For example, you can cast function pointers to the exact type of function you expect to use. Right now, the <code>real_getenv</code> function pointer is <code>void *</code>, meaning it could be anything. You already know the function signature of <code>getenv</code>, so you can simply cast it to that.
+</p>
+<p>Replace your <code>getenv</code> function one last time with the following:
+</p><pre class="code-block"><span class="hljs-keyword">char</span> * getenv(<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *name) {
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">void</span> *handle;      <span class="hljs-comment">// 1 </span>
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">char</span> * (*real_getenv)(<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *); <span class="hljs-comment">// 2</span>
+  
+  <span class="hljs-keyword">static</span> <span class="hljs-built_in">dispatch_once_t</span> onceToken;
+  <span class="hljs-built_in">dispatch_once</span>(&amp;onceToken, ^{  <span class="hljs-comment">// 3 </span>
+    handle = dlopen(<span class="hljs-string">"/usr/lib/system/libsystem_c.dylib"</span>, RTLD_NOW); 
+    assert(handle);
+    real_getenv = dlsym(handle, <span class="hljs-string">"getenv"</span>);
+  });
+  
+  <span class="hljs-keyword">if</span> (strcmp(name, <span class="hljs-string">"HOME"</span>) == <span class="hljs-number">0</span>) { <span class="hljs-comment">// 4</span>
+    <span class="hljs-keyword">return</span> <span class="hljs-string">"/"</span>;
+  }
+  
+  <span class="hljs-keyword">return</span> real_getenv(name); <span class="hljs-comment">// 5</span>
+}</pre>
+<p>You might not be used to this amount of C code, so let’s break it down:
+</p>
+<ol>
+<li>
+<p>This creates a static variable named <code>handle</code>. It’s static so this variable will survive the scope of the function. That is, this variable will not be erased when the function exits, but you’ll only be able to access it inside the <code>getenv</code> function.
+</p></li>
+
+<li>
+<p>You’re doing the same thing here as you declare the <code>real_getenv</code> variable as static, but you’ve made other changes to the <code>real_getenv</code> function pointer. You’ve cast this function pointer to correctly match the signature of <code>getenv</code>. This will allow you to call the real <code>getenv</code> function through the <code>real_getenv</code> variable. Cool, right?
+</p></li>
+
+<li>
+<p>You’re using GCD’s <code>dispatch_once</code> because you really only need to call the setup once. This nicely complements the <code>static</code> variables you declared a couple lines above. You don’t want to be doing the lookup logic every time your augmented <code>getenv</code> runs!
+</p></li>
+
+<li>
+<p>You’re using C’s <code>strcmp</code> to see if you’re querying the <code>&quot;HOME&quot;</code> environment variable. If it’s true, you’re simply returning <code>&quot;/&quot;</code> to signify the root directory. Essentially, you’re overriding what the <code>getenv</code> function returns.
+</p></li>
+
+<li>
+<p>If <code>&quot;HOME&quot;</code> is not supplied as an input parameter, then just fall back on the default <code>getenv</code>.
+</p></li>
+</ol>
+
+<p>Find <code>application(_:didFinishLaunchingWithOptions:)</code> in <em>AppDelegate.swift</em>. Replace this method with:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">application</span><span class="hljs-params">(<span class="hljs-number">_</span> application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplicationLaunchOptionsKey : Any]? = <span class="hljs-literal">nil</span>)</span></span> -&gt; <span class="hljs-type">Bool</span> {
+  <span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> cString = getenv(<span class="hljs-string">"HOME"</span>) {
+    <span class="hljs-keyword">let</span> homeEnv = <span class="hljs-type">String</span>(cString: cString)
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">"HOME env: <span class="hljs-subst">\(homeEnv)</span>"</span>)
+  }
+  
+  <span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> cString = getenv(<span class="hljs-string">"PATH"</span>) {
+    <span class="hljs-keyword">let</span> homeEnv = <span class="hljs-type">String</span>(cString: cString)
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">"PATH env: <span class="hljs-subst">\(homeEnv)</span>"</span>)
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-literal">true</span>
+}</pre>
+<p>Build and run the application. Provided everything went well, you’ll get output similar to the following:
+</p><pre class="code-block"><span class="hljs-type">HOME</span> env: /
+<span class="hljs-type">PATH</span> env: /<span class="hljs-type">Applications</span>/<span class="hljs-type">Xcode</span>.app/<span class="hljs-type">Contents</span>/<span class="hljs-type">Developer</span>/<span class="hljs-type">Platforms</span>/iPhoneSimulator.platform/<span class="hljs-type">Developer</span>/<span class="hljs-type">SDKs</span>/iPhoneSimulator.sdk/usr/bin:/<span class="hljs-type">Applications</span>/<span class="hljs-type">Xcode</span>.app/<span class="hljs-type">Contents</span>/<span class="hljs-type">Developer</span>/<span class="hljs-type">Platforms</span>/iPhoneSimulator.platform/<span class="hljs-type">Developer</span>/<span class="hljs-type">SDKs</span>/iPhoneSimulator.sdk/bin:/<span class="hljs-type">Applications</span>/<span class="hljs-type">Xcode</span>.app/<span class="hljs-type">Contents</span>/<span class="hljs-type">Developer</span>/<span class="hljs-type">Platforms</span>/iPhoneSimulator.platform/<span class="hljs-type">Developer</span>/<span class="hljs-type">SDKs</span>/iPhoneSimulator.sdk/usr/sbin:/<span class="hljs-type">Applications</span>/<span class="hljs-type">Xcode</span>.app/<span class="hljs-type">Contents</span>/<span class="hljs-type">Developer</span>/<span class="hljs-type">Platforms</span>/iPhoneSimulator.platform/<span class="hljs-type">Developer</span>/<span class="hljs-type">SDKs</span>/iPhoneSimulator.sdk/sbin:/<span class="hljs-type">Applications</span>/<span class="hljs-type">Xcode</span>.app/<span class="hljs-type">Contents</span>/<span class="hljs-type">Developer</span>/<span class="hljs-type">Platforms</span>/iPhoneSimulator.platform/<span class="hljs-type">Developer</span>/<span class="hljs-type">SDKs</span>/iPhoneSimulator.sdk/usr/local/bin</pre>
+<p>As you can see, your hooked <code>getenv</code> augmented the <code>HOME</code> environment variable, but defaulted to the normal <code>getenv</code> for <code>PATH</code>.
+</p>
+<p>Although annoying, it’s worth driving this point home yet again. If you called a <code>UIKit</code> method, and <code>UIKit</code> calls <code>getenv</code>, your augmented <code>getenv</code> function will not get called during this time because the <code>getenv</code>’s address had already been resolved when <code>UIKit</code>’s code loaded.
+</p>
+<p>In order to change around <code>UIKit</code>&apos;s call to <code>getenv</code>, you would need knowledge of the indirect symbol table and to modify the <code>getenv</code> address stored in the <code>__DATA.__la_symbol_ptr</code> section of the UIKit module. This is something you will learn about in a later chapter.
+</p>
+<h2 class="segment-chapter">Hard mode: hooking Swift methods</h2>
+
+<p>Going after Swift code that isn’t dynamic is a lot like going after C functions. However, there are a couple of complications with this approach that make it a bit harder to hook into Swift methods.
+</p>
+<p>First off, Swift often uses classes or structs in typical development. This is a unique challenge because <code>dlsym</code> will only give you a C function. You’ll need to augment this function so the Swift method can reference <code>self</code> if you’re grabbing an instance method, or reference the class if you’re calling a class method. When accessing a method that belongs to a class, the assembly will often reference offsets of <code>self</code> or the class when performing the method. Since <code>dlysm</code> will grab you a C-type function, you’ll need to creatively utilize your knowledge of assembly, parameters and registers to turn that C function into a Swift method.
+</p>
+<p>The second issue you need to worry about is that Swift mangles the names of its methods. The happy, pretty name you see in your code is actually a scary long name in the module’s symbol table. You’ll need to find this method’s correct mangled name in order to reference the Swift method through <code>dlysm</code>.
+</p>
+<p>As you know, this project produces and displays a watermarked image. Here’s the challenge for you: using only code, display the original image in the UIImageView. You’re not allowed to use LLDB to execute the command yourself, nor are you allowed to modify any contents in memory once the program is running.
+</p>
+<p>Are you up for this challenge? Don’t worry, I’ll show you how it’s done!
+</p>
+<p>First, open <em>AppDelegate.swift</em> and remove all the printing logic found inside <code>application(_:didFinishLaunchingWithOptions:)</code>. Next, open <em>CopyrightImageGenerator.swift</em>.
+</p>
+<p>Inside this class is a <code>private</code> computed property containing the <code>originalImage</code>. In addition, there’s a public computed property containing the <code>watermarkedImage</code>. It’s this method that calls the <code>originalImage</code> and superimposes the watermark. It’s up to you to figure out a way to call this <code>originalImage</code> method, without changing the <code>HookingSwift</code> dynamic library at all.
+</p>
+<p>Open <em>ViewController.swift</em> and add the following code to the end of <code>viewDidLoad()</code>:
+</p><pre class="code-block"><span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> handle = dlopen(<span class="hljs-string">""</span>, <span class="hljs-type">RTLD_NOW</span>) {}</pre>
+<p>You’re using Swift this time, but you’ll use the same <code>dlopen</code> &amp; <code>dlsym</code> trick you saw earlier. You now need to get the correct location of the <code>HookingSwift</code> framework. The nice thing about <code>dlopen</code> is you can supply relative paths instead of absolute paths.
+</p>
+<p>Time to find where that framework is relative to the <code>Watermark</code> executable.
+</p>
+<p>In Xcode, make sure the <em>Project Navigator</em> is visible (through <em>Cmd + 1</em>). Next, open the <em>Products</em> directory and right-click the <code>Watermark.app</code>. Next, select <em>Show in Finder</em>.
+</p><div class="image-55"><img src="graphics/img80.png"  alt="" title="" /></div>
+<p>Once the Finder window pops up, right click the <code>Watermark</code> bundle and select <em>Show Package Contents</em>. It’s in this directory the actual <code>Watermark</code> executable is located, so you simply need to find the location of the <code>HookingSwift</code> framework’s executable relative to this <code>Watermark</code> executable.
+</p><div class="image-70"><img src="graphics/img81.png"  alt="" title="" /></div>
+<p>Next, select the Frameworks directory. Finally select the <em>HookingSwift.framework</em>. Within this directory, you’ll come across the <code>HookingSwift</code> binary.
+</p>
+<p>This means you’ve found the relative path you can supply to <code>dlopen</code>. Modify the <code>dlopen</code> function call you just added so it looks like the following:
+</p><pre class="code-block"><span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> handle = dlopen(<span class="hljs-string">"./Frameworks/HookingSwift.framework/HookingSwift"</span>, <span class="hljs-type">RTLD_NOW</span>) {
+}</pre>
+<p>Now to the hard part. You want to grab the name of the method responsible for the <code>originalImage</code> property inside the <code>CopyrightImageGenerator</code> class. By now, you know you can use the <code>image lookup</code> LLDB function to search for method name compiled into an executable.
+</p>
+<p>Since you know <code>originalImage</code> is implemented in Swift, use a “Swift style” type of search with the <code>image lookup</code> command. Make sure the app is running, then type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn HookingSwift.*originalImage </pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block"><span class="hljs-number">1</span> match found <span class="hljs-keyword">in</span> /<span class="hljs-type">Users</span>/derekselander/<span class="hljs-type">Library</span>/<span class="hljs-type">Developer</span>/<span class="hljs-type">Xcode</span>/<span class="hljs-type">DerivedData</span>/<span class="hljs-type">Watermark</span>-eztayvulqnjphfeqxjisvyqebwbz/<span class="hljs-type">Build</span>/<span class="hljs-type">Products</span>/<span class="hljs-type">Debug</span>-iphonesimulator/<span class="hljs-type">Watermark</span>.app/<span class="hljs-type">Frameworks</span>/<span class="hljs-type">HookingSwift</span>.framework/<span class="hljs-type">HookingSwift</span>:
+        <span class="hljs-type">Address</span>: <span class="hljs-type">HookingSwift</span>[<span class="hljs-number">0x00000000000013e0</span>] (<span class="hljs-type">HookingSwift</span>.__TEXT.__text + <span class="hljs-number">448</span>)
+        <span class="hljs-type">Summary</span>: <span class="hljs-type">HookingSwift</span>`<span class="hljs-type">HookingSwift</span>.<span class="hljs-type">CopyrightImageGenerator</span>.(originalImage <span class="hljs-keyword">in</span> _71AD57F3ABD678B113CF3AD05D01FF41).getter : <span class="hljs-type">Swift</span>.<span class="hljs-type">Optional</span>&lt;__ObjC.<span class="hljs-type">UIImage</span>&gt; at <span class="hljs-type">CopyrightImageGenerator</span>.swift:<span class="hljs-number">36</span></pre>
+<p>In the output, search for the line containing <code>Address: HookingSwift[0x00000000000013e0]</code>. This is where this method is implemented inside the <code>HookingSwift</code> framework. This will likely be a different address for you.
+</p>
+<p>For this particular example, the function is implemented at offset <code>0x00000000000013e0</code> inside the <code>HookingSwift</code> framework. Copy this address and enter the following command into LLDB:
+</p><pre class="code-block">(lldb) image dump symtab -m HookingSwift</pre>
+<p>This dumps the symbol table of the <code>HookingSwift</code> framework. In addition to dumping the symbol table, you’ve told LLDB to show the mangled names of the Swift functions. Search for (Cmd + F) the address you just copied.
+</p>
+<p>You’ll get an address that matches the address you copied:
+</p><div class="image-100"><img src="graphics/img82.png"  alt="" title="" /></div>
+<p>Here’s the line that interests you.
+</p><pre class="code-block">[    6]     17 D X Code            0x00000000000013e0                    0x00000000000000e0 0x000f0000 _T012HookingSwift23CopyrightImageGeneratorC08originalD033_71AD57F3ABD678B113CF3AD05D01FF41LLSo7UIImageCSgfg</pre>
+<p>Yep, that huge angry alphanumeric chunk at the end is the Swift mangled function name. It’s this monstrosity you’ll stick into <code>dlsym</code> to grab the address of the <code>originalImage</code> getter method.
+</p>
+<p>Open <em>ViewController.swift</em> and add the following code inside the <code>if let</code> you just added:
+</p><pre class="code-block"><span class="hljs-keyword">let</span> sym = dlsym(handle, <span class="hljs-string">"_TFC12HookingSwift23CopyrightImageGeneratorgP33_71AD57F3ABD678B113CF3AD05D01FF4113originalImageGSqCSo7UIImage_"</span>)!
+<span class="hljs-built_in">print</span>(<span class="hljs-string">"<span class="hljs-subst">\(sym)</span>"</span>)</pre>
+<p>You’ve opted for an implicitly unwrapped optional since you want the application to crash if you got the wrong symbol name.
+</p>
+<p>Build and run the application. If everything worked out, you’ll get a memory address at the tail end of the console output (yours will likely be different):
+</p><pre class="code-block">0x0000000103105770</pre>
+<p>This address is the location to <code>CopyrightImageGeneratorg</code>’s <code>originalImage</code> method that <code>dlsym</code> provided. You can verify this by creating a breakpoint on this address in LLDB:
+</p><pre class="code-block">(lldb) b 0x0000000103105770</pre>
+<p>LLDB creates a breakpoint on the following function:
+</p><pre class="code-block">Breakpoint 1: where = HookingSwift`HookingSwift.CopyrightImageGenerator.(originalImage in _71AD57F3ABD678B113CF3AD05D01FF41).getter : Swift.Optional&lt;__ObjC.UIImage&gt; at CopyrightImageGenerator.swift:35, address = 0x0000000103105770</pre>
+<p>Great! You can bring up the address of this function at runtime, but how do you go about calling it? Thankfully, you can use the <code>typealias</code> Swift keyword to cast functions signatures.
+</p>
+<p>Open <em>ViewController.swift</em>, and add the following directly under the <code>print</code> call you just added:
+</p><pre class="code-block"><span class="hljs-keyword">typealias</span> privateMethodAlias = <span class="hljs-meta">@convention</span>(<span class="hljs-built_in">c</span>) (<span class="hljs-type">Any</span>) -&gt; <span class="hljs-type">UIImage</span>? <span class="hljs-comment">// 1 </span>
+<span class="hljs-keyword">let</span> originalImageFunction = <span class="hljs-built_in">unsafeBitCast</span>(sym, to: privateMethodAlias.<span class="hljs-keyword">self</span>) <span class="hljs-comment">// 2</span>
+<span class="hljs-keyword">let</span> originalImage = originalImageFunction(imageGenerator) <span class="hljs-comment">// 3</span>
+<span class="hljs-keyword">self</span>.imageView.image = originalImage <span class="hljs-comment">// 4</span></pre>
+<p>Here’s what this does:
+</p>
+<ol>
+<li>
+<p>This declares the type of function that is syntactically equivalent to the Swift function for the <code>originalImage</code> property getter. There’s something very important to notice here. <code>privateMethodAlias</code> is designed so it takes one parameter type of <code>Any</code>, but the actual Swift function expects no parameters. Why is this?
+</p>
+<p>It’s due to the fact that by looking at the assembly to this method, the reference to <code>self</code> is expected in the RDI register. This means you need to supply the instance of the class as the first parameter into the function to trick this C function into thinking it’s a Swift method. If you don’t do this, there’s a chance the application will crash!
+</p></li>
+
+<li>
+<p>Now you’ve made this new alias, you’re casting the <code>sym</code> address to this new type and calling it <code>originalImageFunction</code>.
+</p></li>
+
+<li>
+<p>You’re executing the method and supplying the instance of the class as the first and only parameter to the function. This will cause the <code>RDI</code> register to be properly set to the instance of the class. It’ll return the original image without the watermark.
+</p></li>
+
+<li>
+<p>You’re assigning the <code>UIImageView</code>’s image to the original image without the watermark.
+</p></li>
+</ol>
+
+<p>With these new changes in, build and run the application. As expected, the original, watermark-free image will now be displayed in the application.
+</p><div class="image-40"><img src="graphics/img83.png"  alt="" title="" /></div>
+<p>Congratulations — you’ve discovered two new amazing functions and how to use them properly. Grabbing the location of code at runtime is a powerful feature that lets you access hidden code the compiler normally blocks from you. In addition, it lets you hook into code so you can perform your own modifications at runtime.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>You’re learning how to play around with dynamic frameworks. The previous chapter showed you how to dynamically load them in LLDB. This chapter showed you how to modify or execute Swift or C code you normally wouldn’t be able to. In the next chapter, you’re going to play with the Objective-C runtime to dynamically load a framework and use Objective-C’s dynamic dispatch to execute classes you don’t have the APIs for.
+</p>
+<p>This is one of the most exciting features of reverse engineering — so get prepared, and caffeinated, for your foray into the next chapter!
+</p></body></html>

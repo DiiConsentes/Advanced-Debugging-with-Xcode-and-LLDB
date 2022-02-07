@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 13: Hello, Ptrace</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 13: Hello, Ptrace</h1>
+
+<p>As alluded to in the introduction to this book, debugging is not entirely about just fixing stuff. Debugging is the process of gaining a better understanding of what’s happening behind the scenes. In this chapter, you’ll explore the foundation of debugging, namely, a system call responsible for a process attaching itself to another process: <code><em>ptrace</em></code>.
+</p>
+<p>In addition, you’ll learn some common security tricks developers use with <code>ptrace</code> to prevent a process from attaching to their programs. You’ll also learn some easy workarounds for these developer-imposed restrictions.
+</p>
+<h2 class="segment-chapter">System calls</h2>
+
+<p>Wait wait wait... <code>ptrace</code> is a system call. What’s a <i>system</i> call?
+</p>
+<p>A <em>system call</em> is a powerful, lower-level service provided by the kernel. System calls are the foundation for user-land frameworks, such as C’s stdlib, Cocoa, UIKit, or even your own brilliant frameworks are built upon.
+</p>
+<p>macOS High Sierra has about 530 system calls. Open a Terminal window and run the following command to get a very close estimate of the number of systems calls available in your system:
+</p><pre class="code-block">sudo dtrace -ln &apos;syscall:::entry&apos; | wc -l</pre>
+<p>This command uses an incredibly powerful tool named <em>DTrace</em> to inspect system calls present on your macOS machine.
+</p>
+<div class="note">
+<p><em>Note</em>: You’ll need <code>sudo</code> for the <code>DTrace</code> command as DTrace can monitor processes across multiple users, as well as perform some incredibly powerful actions. With great power comes great responsibility — that’s why you need <code>sudo</code>.
+</p></div>
+
+<p>You’ll learn more about how to bend DTrace to your will in the 5th section of this book. For now you’ll use simple DTrace commands to get system call information out of <code>ptrace</code>.
+</p>
+<h2 class="segment-chapter">The foundation of attachment, ptrace</h2>
+
+<p>You’re now going to take a look at the <code>ptrace</code> system call in more depth. Open a Terminal console, or reuse an old one. Before you start, make sure to clear the Terminal console by pressing <code>⌘ + K</code>. Next, execute the following DTrace inline script in Terminal to see how <code>ptrace</code> is called:
+</p><pre class="code-block">sudo dtrace -qn &apos;syscall::ptrace:entry { printf(&quot;%s(%d, %d, %d, %d) from %s\n&quot;, probefunc, arg0, arg1, arg2, arg3, execname); }&apos;</pre>
+<p>This creates a <code>DTrace</code> probe that will execute every time the <code>ptrace</code> function executes; it will spit out the arguments of the <code>ptrace</code> system call as well as the executable responsible for calling.
+</p>
+<p>Don’t worry about the semantics of this <code>DTrace</code> script; you’ll become uncomfortably familiar with this tool in a later set of chapters. For now, just focus on what’s returned from the Terminal.
+</p>
+<p>Create a new tab in Terminal with the shortcut <code>⌘ + T</code>.
+</p>
+<div class="note">
+<p><em>Note</em>: If you haven’t disabled Rootless yet, you’ll need to check out Chapter 1 for more information on how to disable it, or else <code>ptrace</code> will fail when attaching to Finder and your DTrace scripts will not work.
+</p></div>
+
+<p>Once Rootless is disabled, type the following into the new Terminal tab:
+</p><pre class="code-block">lldb -n Finder</pre>
+<p>Once you’ve attached to the <code>Finder</code> application, the DTrace probe you set up on your first Terminal tab will spit out some information similar to the following:
+</p><pre class="code-block">ptrace(14, 459, 0, 0) from debugserver</pre>
+<p>It seems a process named <em>debugserver</em> is responsible for calling <code>ptrace</code> and attaching to the <code>Finder</code> process. But how was <code>debugserver</code> called? You attached to <code>Finder</code> using LLDB, not <code>debugserver</code>. And is this <code>debugserver</code> process even still alive?
+</p>
+<p>Time to answer these questions. Create a new tab in Terminal (<code>⌘ + T</code>). Next, type the following into the Terminal window:
+</p><pre class="code-block">pgrep debugserver</pre>
+<p>Provided LLDB has attached successfully and is running, you’ll receive an integer output representing <code>debugserver</code>’s process ID, or <em>PID</em>, indicating <code>debugserver</code> is alive and well and running on your computer.
+</p>
+<p>Since <code>debugserver</code> is currently running, you can find out how <code>debugserver</code> was started. Type the following:
+</p><pre class="code-block">ps -fp `pgrep -x debugserver`</pre>
+<p>Be sure to note that the above commands uses <i>backticks</i>, not single quotes, to make the command work.
+</p>
+<p>This will give you the full path to the location of <code>debugserver</code>, along with all arguments used to launch this process.
+</p>
+<p>You’ll see something similar to the following:
+</p><pre class="code-block">/Applications/Xcode-beta.app/Contents/SharedFrameworks/LLDB.framework/Resources/debugserver --native-regs --setsid --reverse-connect 127.0.0.1:59297</pre>
+<p>Cool! This probably makes you wonder how the functionality changes when you subtract or modify certain launch arguments. For instance, what would happen if you got rid of <code>--reverse-connect 127.0.0.1:59297</code>?
+</p>
+<p>So which process launched <code>debugserver</code>? Type the following:
+</p><pre class="code-block">ps -o ppid= $(pgrep -x debugserver)</pre>
+<p>This will dump out the parent PID responsible for launching <code>debugserver</code>. You’ll get an integer similar to the following:
+</p><pre class="code-block">82122</pre>
+<p>As always when working with PIDs, they will very likely be different on your computer (and from run-to-run) than what you see here.
+</p>
+<p>All right, numbers are interesting, but you’re dying to know the actual name associated with this PID. You can get this information by executing the following in Terminal, replacing the number with the PID you discovered in the previous step:
+</p><pre class="code-block">ps -a 82122</pre>
+<p>You’ll get the name, fullpath, and launch arguments of the process responsible for launching <code>debugserver</code>:
+</p><pre class="code-block">PID   TT  STAT      TIME COMMAND
+82122 s000  S+     0:05.35 /Applications/Xcode-beta.app/Contents/Developer/usr/bin/lldb -n Finder</pre>
+<p>As you can see, <code>LLDB</code> was responsible for launching the debugserver process, which then attached itself to <code>Finder</code> using the <code>ptrace</code> system call. Now you know where this call is coming from, you can take a deeper dive into the function arguments passed into <code>ptrace</code>.
+</p>
+<h2 class="segment-chapter">ptrace arguments</h2>
+
+<p>You’re able to infer the process and arguments executed when <code>ptrace</code> was called. Unfortunately, they’re just numbers, which are rather useless to you at the moment. It’s time to make sense of these numbers using the <em>&lt;</em><em>sys/ptrace.h&gt;</em> header file.
+</p>
+<p>To do this, you’ll use a macOS application to guide your understanding.
+</p>
+<p>Open up the <em>helloptrace</em> application, which you’ll find in the resources folder for this chapter. This is a macOS Terminal command application and is as barebones as they come. All it does is launch then complete with no output to <code>stdout</code> at all.
+</p>
+<p>The only thing of interest in this project is a bridging header used to import the <code>ptrace</code> system call API into Swift.
+</p>
+<p>Open <em>main.swift</em> and add the following code to the end of the file:
+</p><pre class="code-block"><span class="hljs-keyword">while</span> <span class="hljs-literal">true</span> {
+  sleep(<span class="hljs-number">2</span>)
+  <span class="hljs-built_in">print</span>(<span class="hljs-string">"helloptrace"</span>)
+}</pre>
+<p>Next, position Xcode and the DTrace Terminal window so they are both visible on the same screen.
+</p>
+<p>Build and run the application. Once your app has launched and <code>debugserver</code> has attached, observe the output generated by the DTrace script.
+</p><div class="image-90"><img src="graphics/img68.png"  alt="" title="" /></div>
+<p>Take note of the DTrace Terminal window. Two new <code>ptrace</code> calls will happen when the <code>helloptrace</code> process starts running. The output of the DTrace script will look similar to this:
+</p><pre class="code-block">ptrace(14, 50121, 0, 0) from debugserver
+ptrace(13, 50121, 5891, 0) from debugserver</pre>
+<p>Pause the application. At the time of writing, there’s a bug in Xcode that won’t retrieve the proper documentation for <code>ptrace</code>. To work around this, try to use the <em>Open Quickly</em> Xcode feature (<code>⌘ + Shift + O</code>) and type <em>sys/ptrace.h</em>.
+</p>
+<p>A look in <em>ptrace.h</em> gives the following function prototype for <code>ptrace</code>:
+</p><pre class="code-block">int ptrace(int _request, pid_t _pid, caddr_t _addr, int _data);</pre>
+<p>The first parameter is what you want <code>ptrace</code> to do. The second parameter is the PID you want to act upon. The third and fourth parameters depend on the first parameter.
+</p>
+<p>Take a look back at your earlier DTrace output. Your first line of output was something similar to the following:
+</p><pre class="code-block">ptrace(14, 50121, 0, 0) from debugserver</pre>
+<p>Compare the first parameter to <em>ptrace.h</em> header and you’ll see the first parameter, <code>14</code>, actually stands for <code><em>PT_ATTACHEXC</em></code>. What does this <code>PT_ATTACHEXC</code> mean? To get information about this parameter, open a Terminal window. Next, type <em>man ptrace</em> and search for <code>PT_ATTACHEXC</code>.
+</p>
+<div class="note">
+<p><em>Note</em>: You can perform case-sensitive searches on <code>man</code> pages by pressing <code>/</code>, followed by your search query. You can search downwards to the next hit by pressing <em>N</em> or upwards to the previous hit by pressing <em>Shift + N</em>.
+</p></div>
+
+<p>You’ll find some relevant info about <code>PT_ATTACHEXC</code> with the following output obtained from the <code>ptrace</code> <code>man</code> page:
+</p>
+<p>This request allows a process to gain control of an otherwise unrelated process and begin tracing it. It does not need any cooperation from the to-be-traced process. In this case, <code>pid</code> specifies the process ID of the to-be-traced process, and the other two arguments are ignored.
+</p>
+<p>With this information, the reason for the first call of <code>ptrace</code> should be clear. This call says “hey, attach to this process”, and attaches to the process provided in the second parameter.
+</p>
+<p>Onto the next <code>ptrace</code> call from your DTrace output:
+</p><pre class="code-block">ptrace(13, 50121, 5891, 0) from debugserver</pre>
+<p>This one is a bit trickier to understand, since Apple decided to not give any <code>man</code> documentation about this one. Er, thanks, Apple. This call relates to the internals of a process attaching to another one.
+</p>
+<p>If you look at the <code>ptrace</code> API header, 13 stands for <code><em>PT_THUPDATE</em></code> and relates to how the controlling process, in this case, <code>debugserver</code>, handles UNIX signals and Mach messages passed to the controlled process; in this case, <code>helloptrace</code>.
+</p>
+<p>The kernel needs to know how to handle signal passing from a process controlled by another process, as in the <code>Signals</code> project from Section 1. The controlling process could say it doesn’t want to send any signals to the controlled process.
+</p>
+<p>This specific <code>ptrace</code> action is an implementation detail of how the Mach kernel handles <code>ptrace</code> internally; there’s no need to dwell on it.
+</p>
+<p>Fortunately, there are other <i>documented</i> signals definitely worth exploring through <code>man</code>. One of them is the <code><em>PT_DENY_ATTACH</em></code> action, which you’ll learn about now.
+</p>
+<h2 class="segment-chapter">Creating attachment issues</h2>
+
+<p>A process can actually specify it doesn’t want to be attached to by calling <code>ptrace</code> and supplying the <code>PT_DENY_ATTACH</code> argument. This is often used as an anti-debugging mechanism to prevent unwelcome reverse engineers from discovering a program’s internals.
+</p>
+<p>You’ll now experiment with this argument. Open <em>main.swift</em> and add the following line of code before the <code>while</code> loop:
+</p><pre class="code-block">ptrace(<span class="hljs-type">PT_DENY_ATTACH</span>, <span class="hljs-number">0</span>, <span class="hljs-literal">nil</span>, <span class="hljs-number">0</span>)</pre>
+<p>Build and run, keep on eye on the debugger console and see what happens.
+</p>
+<p>The program will exit and output the following to the debugger console:
+</p><pre class="code-block"><span class="hljs-type">Program</span> ended with exit code: <span class="hljs-number">45</span></pre>
+<div class="note">
+<p><em>Note</em>: You may need to open up the debug console by clicking <em>View ▸ Debug Area ▸ Activate Console</em> (or <code>⌘ + Shift + Y</code> if you’re one of those cool, shortcut devs) to see this.
+</p></div>
+
+<p>This happened because Xcode launches the <code>helloptrace</code> program by default with LLDB automatically attached. If you execute the <code>ptrace</code> function with <code>PT_DENY_ATTACH</code>, LLDB will exit early and the program will stop executing.
+</p>
+<p>If you were to try and execute the <code>helloptrace</code> program, and tried later to attach to it, LLDB would fail in attaching and the <code>helloptrace</code> program would happily continue execution, oblivious to <code>debugserver</code>’s attachment issues.
+</p>
+<p>There are numerous macOS (and iOS) programs that perform this very action in their production builds. However, it’s rather trivial to circumvent this security precaution. Ninja debug mode activated!
+</p>
+<h2 class="segment-chapter">Getting around PT_DENY_ATTACH</h2>
+
+<p>Once a process executes <code>ptrace</code> with the <code>PT_DENY_ATTACH</code> argument, making an attachment greatly escalates in complexity. However, there’s a <i>much</i> easier way of getting around this problem.
+</p>
+<p>Typically a developer will execute <code>ptrace(PT_DENY_ATTACH, 0, 0, 0)</code> somewhere in the main executable’s code — oftentimes, right in the main function.
+</p>
+<p>Since LLDB has the <code>-w</code> argument to wait for the launching of a process, you can use LLDB to “catch” the launch of a process and perform logic to augment or ignore the <code>PT_DENY_ATTACH</code> command before the process has a chance to execute <code>ptrace</code>!
+</p>
+<p>Open a new Terminal window and type the following:
+</p><pre class="code-block">sudo lldb -n &quot;helloptrace&quot; -w </pre>
+<p>This starts an <code>lldb</code> session and attaches to the <code>helloptrace</code> program, but this time <code>-w</code> tells <code>lldb</code> to wait until a new process with the name <code>helloptrace</code> has started.
+</p>
+<p>You need to use <code>sudo</code> due to an ongoing bug with LLDB and macOS security when you tell LLDB to wait for a Terminal program to launch.
+</p>
+<p>In the Project Navigator, open the <em>Products</em> folder and right click on the <em>helloptrace</em> executable. Next, select <em>Show in Finder</em>.
+</p><div class="image-60"><img src="graphics/img69.png"  alt="" title="" /></div>
+<p>Next, drag the <code>helloptrace</code> executable into a new Terminal tab. Finally, press <em>Enter</em> to start the executable.
+</p><div class="image-60"><img src="graphics/img70.png"  alt="" title="" /></div>
+<p>Now, open the previously created Terminal tab, where you had LLDB sit and wait for the <code>helloptrace</code> executable.
+</p>
+<p>If everything went as expected, LLDB will see <code>helloptrace</code> has started and will launch itself, attaching to this newly created <code>helloptrace</code> process.
+</p>
+<p>In LLDB, create the following regex breakpoint to stop on any type of function containing the word <code>ptrace</code>:
+</p><pre class="code-block">(lldb) rb ptrace -s libsystem_kernel.dylib</pre>
+<p>This will add a breakpoint on the userland gateway to the actual kernel <code>ptrace</code> function. Next, type <code>continue</code> into the Terminal window.
+</p><pre class="code-block">(lldb) continue</pre>
+<p>You’ll break right before the <code>ptrace</code> function is about to be executed. However, you can simply use LLDB to return early and not execute that function. Do that now like so:
+</p><pre class="code-block">(lldb) thread return 0</pre>
+<p>Next, simply just continue:
+</p><pre class="code-block">(lldb) continue</pre>
+<p>Although the program entered the <code>ptrace</code> userland gateway function, you told LLDB to return early and not execute the logic that will execute the kernel <code>ptrace</code> system call.
+</p>
+<p>Navigate to the <code>helloptrace</code> output tab and verify it’s outputting &quot;<code>helloptrace</code>&quot; over and over. If so, you’ve successfully bypassed <code>PT_DENY_ATTACH</code> and are running LLDB while still attached to the <code>helloptrace</code> command!
+</p>
+<h2 class="segment-chapter">Other anti-debugging techniques</h2>
+
+<p>Since we’re on the topic of anti-debugging, let’s put iTunes on the spot: for the longest time, iTunes actually used the <code>ptrace</code>’s <code>PT_DENY_ATTACH</code>. However, the current version of iTunes (12.7.0 at the time of writing) has opted for a different technique to prevent debugging.
+</p>
+<p>iTunes will now check if it’s being debugged using the powerful <em>sysctl</em> function, then kill itself if true. <code>sysctl</code> is another kernel function (like <code>ptrace</code>) that gets or sets kernel values. iTunes repeatedly calls <code>sysctl</code> while it’s running using a <code>NSTimer</code> to call out to the logic.
+</p>
+<p>Below is a simplified code example in Swift of what iTunes is doing:
+</p><pre class="code-block"><span class="hljs-keyword">let</span> mib = <span class="hljs-type">UnsafeMutablePointer</span>&lt;<span class="hljs-type">Int32</span>&gt;.allocate(capacity: <span class="hljs-number">4</span>)
+mib[<span class="hljs-number">0</span>] = <span class="hljs-type">CTL_KERN</span>
+mib[<span class="hljs-number">1</span>] = <span class="hljs-type">KERN_PROC</span>
+mib[<span class="hljs-number">2</span>] = <span class="hljs-type">KERN_PROC_PID</span>
+mib[<span class="hljs-number">3</span>] = getpid()
+
+<span class="hljs-keyword">var</span> size: <span class="hljs-type">Int</span> = <span class="hljs-type">MemoryLayout</span>&lt;kinfo_proc&gt;.size
+<span class="hljs-keyword">var</span> info: kinfo_proc? = <span class="hljs-literal">nil</span>
+
+sysctl(mib, <span class="hljs-number">4</span>, &amp;info, &amp;size, <span class="hljs-literal">nil</span>, <span class="hljs-number">0</span>)
+
+<span class="hljs-keyword">if</span> (info.unsafelyUnwrapped.kp_proc.p_flag &amp; <span class="hljs-type">P_TRACED</span>) &gt; <span class="hljs-number">0</span> {
+  exit(<span class="hljs-number">1</span>)
+}</pre>
+<p>I am not going to go into the details of the expected params for <code>sysctl</code> yet, we’ll save that for a different chapter. Just know that there is more than one way to skin a cat.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>With the DTrace dumping script you used in this chapter, explore parts of your system and see when <code>ptrace</code> is called.
+</p>
+<p>If you’re feeling cocky, read up on the <code>ptrace</code> <code>man</code> pages and see if you can create a program that will automatically attach itself to another program on your system.
+</p>
+<p>Still have energy? Go <code>man sysctl</code>. That will be some good night-time reading.
+</p>
+<p>Remember, having attachment issues is not always a bad thing!
+</p></body></html>

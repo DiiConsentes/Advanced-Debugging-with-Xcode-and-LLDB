@@ -1,0 +1,393 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 26: Intermediate DTrace</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 26: Intermediate DTrace</h1>
+
+<p>This chapter will act as a grab-bag of more DTrace fundamentals, destructive actions (yay!), as well as how to use DTrace with Swift. I’ll get you excited first before going into theory. I’ll start with how to use DTrace with Swift then go into the sleep-inducing concepts that will make your eyes water. Nah, trust me, this will be fun!
+</p>
+<p>In this chapter, you’ll learn additional ways DTrace can profile code, as well as how to augment existing code without laying a finger on the actual executable itself. Magic!
+</p>
+<h2 class="segment-chapter">Getting started</h2>
+
+<p>We’re not done picking on Ray Wenderlich. Included in this chapter is yet another movie-title inspired project with Ray’s name spliced into it.
+</p>
+<p>Open up the <em>Finding Ray</em> application in the <em>starter</em> directory for this chapter. No need to do anything special for setup. Build and run the project on the iPhone X simulator.
+</p>
+<p>The majority of this project is written in Swift, though many Swift subclasses inherit from <code>NSObject</code> as they need to be visually displayed (if it&apos;s an on-screen component, it must inherit from <code>UIView</code>, which inherits from <code>NSObject</code>, meaning Objective-C)
+</p>
+<p>DTrace is agnostic to whatever Swift code inherits from whatever class as it’s all the same to DTrace. You can still profile Objective-C code subclassed by a Swift object so long as it inherits from <code>NSObject</code> using the <code>objc$target</code> provider. The downside to this approach is if there are any new methods implemented or any overridden methods implemented by the Swift class, you’ll not see them in any Objective-C probes.
+</p>
+<h2 class="segment-chapter">DTrace &amp; Swift in theory</h2>
+
+<p>Let’s talk about how one can use DTrace to profile Swift code. There are some pros along with some cons that should be taken into consideration.
+</p>
+<p>First, the happy news: Swift works well with DTrace modules! This means it’s very easy to filter out Swift code based on the particular module it’s implemented in. The module (aka the <code>probemod</code>) will likely be the name of your target in Xcode which contains the Swift code (unless you’ve changed the target name in Xcode’s build settings).
+</p>
+<p>This means you can filter the following Swift code implemented in the <code>SomeTarget</code> module like so:
+</p><pre class="code-block">pid$target:SomeTarget::entry</pre>
+<p>This will set a probe on the start of every single function implemented inside the <code>SomeTarget</code> module. Since the <code>pid$target</code> goes after all the non-Objective-C code, this probe will pick C &amp; C++ code as well, but as you’ll see in a second, that’s easy to filter out with a well-designed query.
+</p>
+<p>Now for the bad news. Since the information about the module is taken up, the Swift classname and function name all go into the DTrace <code>function</code> section (aka <code>probefunc</code>) for a Swift method. This means you need to be a little more creative with your DTrace querying.
+</p>
+<p>In the previous iteration of Swift (Swift 3), the <code>probefunc</code> Swift names returned by DTrace were the mangled Swift names, but that&apos;s no longer applicable in Swift 4! DTrace now uses the unmangled Swift names in the output!
+</p>
+<p>So without further ado, let’s look at a quick example of a Swift DTrace probe.
+</p>
+<p>Imagine you have a subclass of <code>UIViewController</code> named <code><em>ViewController</em></code> which only overrides <code>viewDidLoad</code>. Like so:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">ViewController</span>: <span class="hljs-title">UIViewController</span> </span>{
+  <span class="hljs-keyword">override</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">viewDidLoad</span><span class="hljs-params">()</span></span> { 
+    <span class="hljs-keyword">super</span>.viewDidLoad()
+  }
+}</pre>
+<p>If you want to create a breakpoint on this function, the fullname to this breakpoint would be the following:
+</p><pre class="code-block">SomeTarget.ViewController.viewDidLoad() -&gt; ()</pre>
+<p>No surprise there; you’ve beaten that concept to death in Section 1. If you wanted to search for every <code>viewDidLoad</code> implemented by Swift in the <code>SomeTarget</code> target (catchy name, right?), you could create a DTrace probe description that looks like the following:
+</p><pre class="code-block">pid$target:SomeTarget:*viewDidLoad*:entry</pre>
+<p>This effectively says, &quot;So long as <code>SomeTarget</code> and <code>viewDidLoad</code> are in the function section, gimme the probe.&quot;
+</p>
+<p>Time to try this theory out in the <em>Finding Ray</em> application.
+</p>
+<h3 class="segment-chapter">DTrace &amp; Swift in Practice</h3>
+
+<p>If the <em>Finding Ray</em> application is not already running, spark it up. iPhone X Plus Simulator. You know what’s up.
+</p>
+<p>Create a fresh window in <code>Terminal</code> and type the following:
+</p><pre class="code-block">sudo dtrace -n <span class="hljs-string">'pid$target:Finding?Ray::entry'</span> -p `pgrep <span class="hljs-string">"Finding Ray"</span>`</pre>
+<p>I chose an Xcode project name that has a space on purpose. Take note of what you need to do to resolve spaces in an Xcode target when using a DTrace script. The <code>probemod</code> section uses a <em>?</em> as a placeholder wildcard character for the space. In addition, you need to surround your query when <code>pgrep</code>’ing for the process name, otherwise it won’t work.
+</p>
+<p>After you’ve finished typing your password, you’ll get ~240 probe <code>entry</code> hits for all the non-Objective-C functions inside the <em>Finding Ray</em> module.
+</p>
+<p>Click on Ray and drag him around in the Simulator while keeping an eye on all the methods that are getting hit in the <code>Terminal</code>.
+</p><div class="image-95"><img src="graphics/img160.png"  alt="" title="" /></div>
+<p>There’s still a bit too much noise. You only want the Swift functions to <i>only</i> be displayed. No need to see the probe ID nor the CPU columns.
+</p>
+<p>Kill the DTrace script and replace it with the following:
+</p><pre class="code-block">sudo dtrace -qn <span class="hljs-string">'pid$target:Finding?Ray::entry { printf("%s\n", probefunc); } '</span> -p `pgrep <span class="hljs-string">"Finding Ray"</span>` </pre>
+<p>It’s subtle, but you’ve added the <code>-q</code> (or <code>--quiet</code>) option. This will tell DTrace to not display the number of probes you’ve found, nor to display its default output when a probe gets hit. Fortunately, you’ve also added a <code>printf</code> statement to spit out the <code>probefunc</code> manually instead.
+</p>
+<p>Wait for DTrace to start up, then drag again.
+</p>
+<p><i>Much</i> prettier. Unfortunately, you’re still getting some methods the Swift compiler generated that I didn’t write. You don’t want to see any code the Swift compiler has created; you only want to see code I wrote in my Swift classes.
+</p>
+<p>Kill the previous DTrace script and augment this probe description to <i>only</i> contain code that you’ve implemented, and not that of the Swift compiler:
+</p><pre class="code-block">sudo dtrace -qn <span class="hljs-string">'pid$target:Finding?Ray::entry { printf("%s\n", probefunc); } '</span> -p `pgrep <span class="hljs-string">"Finding Ray"</span>` | grep -E <span class="hljs-string">"^[^@].*\."</span></pre>
+<p>Jump over to the Simulator and drag Ray around. Notice the difference?
+</p><pre class="code-block">QuickTouchPanGestureRecognizer.delaysTouchesBegan.getter
+ViewController.handleGesture(panGesture:)
+ViewController.dynamicAnimator.getter
+ViewController.snapBehavior.getter
+ViewController.containerView.getter
+MotionView.animate(isSelected:)</pre>
+<p>This is piping the output to <code>grep</code> which is using a regular expression query to say return stuff anything that doesn&apos;t contain a &quot;@&quot; and contains a period in the output. This essentially is saying dodn&apos;t return any <code>@objc</code> bridging methods and a period is gauranteed in any Swift code you write thanks to module namespacing.
+</p>
+<p>One final addition. Augment the script to remove the grep filtering, and instead trace all Swift function entries and exits in the &quot;Finding Ray&quot; module, and use DTrace’s <code><em>flowindent</em></code> option.
+</p>
+<p>The flowindent option will properly indent function entries and returns.
+</p><pre class="code-block">sudo dtrace -qFn <span class="hljs-string">'pid$target:Finding?Ray::*r* { printf("%s\n", probefunc); } '</span> -p `pgrep <span class="hljs-string">"Finding Ray"</span>` </pre>
+<p>There are a couple of items to note on this one. You’ve added the <code>-F</code> option for <code>flowindent</code>. Check out the name section in the probe description, <code>*r*</code>. What does this do?
+</p>
+<p>From a DTrace standpoint, most functions in a process have <code>entry</code>, <code>return</code> and <code>function</code> offsets for every assembly instruction. These offsets are given in hexadecimal. This says “give me any name that contains the letter &apos;r&apos;.”
+</p>
+<p>This returns both the <code>entry</code> &amp; <code>return</code> in the probe description <code>name</code>, but omits any function offsets since assembly only goes as high as <code>f</code>. Clever, eh?
+</p>
+<p>With both the <code>enter</code> &amp; <code>return</code> probes of each Swift function enabled, you can clearly see what functions are being executed and where they’re being executed from.
+</p>
+<p>Wait for DTrace to start, then drag Ray Wenderlich’s face around. You’ll get pretty output that looks like this:
+</p><div class="image-95"><img src="graphics/img161.png"  alt="" title="" /></div>
+<p>Hehehe... thought you would get a kick out of that one!
+</p>
+<h2 class="segment-chapter">DTrace variables &amp; control flow</h2>
+
+<p>You’ll jump into a bit of theory now, which you will need for the remainder of this section.
+</p>
+<p>DTrace has several ways to create and reference variables in your script. All of them have their own pros and cons as they battle between speed and convenience of use in DTrace.
+</p>
+<h3 class="segment-chapter">Scalar Variables</h3>
+
+<p>The first way to create a variable is to use a <em>scalar variable</em>. These are simple variables that can take only take items of fixed size. You don’t need to declare the type of scalar variables, or any variables for that matter in your DTrace scripts.
+</p>
+<p>I tend to lean towards using a scalar variable in DTrace scripts to represent a Boolean value, which is due to the limited conditional logic with DTrace — you only have predicates and ternary operators to really branch your logic.
+</p>
+<p>For example, here is a practical case to use a scalar variable:
+</p><pre class="code-block">#!/usr/sbin/dtrace -s
+#pragma <span class="hljs-type">D</span> option quiet  
+
+dtrace:::<span class="hljs-type">BEGIN</span>
+{
+    isSet = <span class="hljs-number">0</span>;
+    object = <span class="hljs-number">0</span>;
+}
+objc$target:<span class="hljs-type">NSObject</span>:-<span class="hljs-keyword">init</span>:<span class="hljs-keyword">return</span> / isSet == <span class="hljs-number">0</span> /
+{
+    object = arg1;
+    isSet = <span class="hljs-number">1</span>;
+}
+objc$target:::entry / isSet &amp;&amp; object == arg0 /
+{
+    printf(<span class="hljs-string">"0x%p %c[%s %s]\n"</span>, arg0, probefunc[<span class="hljs-number">0</span>], probemod, (string)&amp;probefunc[<span class="hljs-number">1</span>]);
+}</pre>
+<p>This script declares two scalar variables: the <code><em>isSet</em></code> scalar variable will check and see if the <code><em>object</em></code> scalar variable has been set. If not, the script will set the the next object to the <code>object</code> variable. This script will trace all Objective-C method calls that are being used on the <code>object</code> variable.
+</p>
+<h3 class="segment-chapter">Clause-local variables</h3>
+
+<p>The next step up are <em>clause-local</em> variables. These are denoted by the word <em>this-&gt;</em> used right before the variable name and can take any type of value, including <code>char*</code>’s. Clause-local variables can survive across the <i>same</i> probe. If you you try to reference them on a different probe, it won’t work. For example, consider the following:
+</p><pre class="code-block">pid$target::objc_msgSend:entry 
+{
+  this-&gt;object = arg0;  
+}
+
+pid$target::objc_msgSend:entry / this-&gt;object != 0 / {
+  /* Do some logic here */
+}
+
+obc$target:::entry {
+  this-f = this-&gt;object; /* Won’t work since different probe */
+}</pre>
+<p>I tend to stick with clause-local variables as much as I can since they’re quite fast and I don’t have to manually free them like I do with the next type of variable...
+</p>
+<h3 class="segment-chapter">Thread-local variables</h3>
+
+<p>Thread-local variables offer the most flexibility at the price of speed. Additionally, you have to manually release them, otherwise you’ll leak memory. Thread-local variables can be used by preceding the variable name with <code><em>self-&gt;</em></code>.
+</p>
+<p>The nice thing about thread-local variables is they can be used in different probes, like so:
+</p><pre class="code-block">objc$target:NSObject:init:entry {
+  self-&gt;a = arg0;
+}
+
+objc$target::-dealloc:entry / arg0 == self-&gt;a / {
+  self-&gt;a = 0; 
+}</pre>
+<p>This will assign <code>self-&gt;a</code> to whatever object is being initialized. When this object is released, you’ll need to manually release it as well by setting <code>a</code> to 0.
+</p>
+<p>With variables in DTrace out of the way, let’s talk about how you can use variables to execute conditional logic.
+</p>
+<h3 class="segment-chapter">DTrace conditions</h3>
+
+<p>DTrace has extremely limited conditional logic built in. There’s no such thing as the if/else-statement in DTrace! This is a conscious decision, because a DTrace script is designed to be fast.
+</p>
+<p>However, it does present a problem for you when you want to conditionally perform logic based upon a particular probe, or information contained within that probe.
+</p>
+<p>To get around this limitation, there are two notable methods you can use to perform conditional logic.
+</p>
+<p>The first workaround is to use a <em>ternary operator</em>.
+</p>
+<p>Consider the following contrived Objective-C logic:
+</p><pre class="code-block"><span class="hljs-keyword">int</span> b = <span class="hljs-number">10</span>;
+<span class="hljs-keyword">int</span> a = <span class="hljs-number">0</span>;
+
+<span class="hljs-keyword">if</span> (b == <span class="hljs-number">10</span>) {
+  a = <span class="hljs-number">5</span>;
+} <span class="hljs-keyword">else</span> {
+  a = <span class="hljs-number">6</span>;
+}</pre>
+<p>This can be rewritten in DTrace to use a ternary operator:
+</p><pre class="code-block">b = <span class="hljs-number">10</span>;
+a = <span class="hljs-number">0</span>;
+a = b == <span class="hljs-number">10</span> ? <span class="hljs-number">5</span> : <span class="hljs-number">6</span></pre>
+<p>Here’s another example of conditional logic with no else-statement:
+</p><pre class="code-block"><span class="hljs-keyword">int</span> b = <span class="hljs-number">10</span>;
+<span class="hljs-keyword">int</span> a = <span class="hljs-number">0</span>;
+<span class="hljs-keyword">if</span> (b == <span class="hljs-number">10</span>) {
+  a++;
+}</pre>
+<p>In DTrace form, this would look like:
+</p><pre class="code-block">b = <span class="hljs-number">10</span>; 
+a = <span class="hljs-number">0</span>;
+a = b == <span class="hljs-number">10</span> ? a + <span class="hljs-number">1</span> : a</pre>
+<p>The other solution to this is to use multiple DTrace clauses along with a predicate. The first DTrace clause will setup the information needed by the second clause to see if it should perform the action in the predicate.
+</p>
+<p>I know you probably forgot all the terminology for these DTrace components so let’s also look at an example for this.
+</p>
+<p>For example, let’s say you wanted to trace every call in between the start and stop of a function. Typically, I would recommend just setting a DTrace script to catch everything and then use LLDB to execute the command. But what if you wanted to do this solely in DTrace?
+</p>
+<p>For this particular example, you want to trace all Objective-C method calls being executed by <code>-[UIViewController initWithNibName:bundle:]</code> with the following DTrace script:
+</p><pre class="code-block">#!/usr/sbin/dtrace -s
+#pragma <span class="hljs-type">D</span> option quiet  
+
+dtrace:::<span class="hljs-type">BEGIN</span>
+{
+  trace = <span class="hljs-number">0</span>;
+}
+
+objc$target:target:<span class="hljs-type">UIViewController</span>:-initWithNibName?bundle?:entry {
+  trace = <span class="hljs-number">1</span>
+}
+
+objc$target:target:::entry / trace / {
+  printf(<span class="hljs-string">"%s\n"</span>, probefunc);
+}
+
+objc$target:target:<span class="hljs-type">UIViewController</span>:-initWithNibName?bundle?:<span class="hljs-keyword">return</span> {
+  trace = <span class="hljs-number">0</span>
+}</pre>
+<p>As soon as the <code>initWithNibName:bundle:</code> is entered, the <code>trace</code> variable is set. From there on out, every single Objective-C method is displayed until <code>initWithNibName:bundle:</code> returns.
+</p>
+<p>Not being able to use loops and conditions can appear annoying at first when writing DTrace scripts, but think of not relying on the common programming idioms you’ve become accustomed to as a nice brain teaser.
+</p>
+<p>Time for another big discussion: inspecting process memory in your DTrace scripts.
+</p>
+<h2 class="segment-chapter">Inspecting process memory</h2>
+
+<p>It may come as surprise, but the DTrace scripts you’ve been writing are actually executed in the kernel itself. This is why they’re so fast and also why you don’t need to change any code in an already compiled program to perform dynamic tracing. The kernel has direct access!
+</p>
+<p>DTrace has probes all over your computer. There are probes in the kernel, there’s probes in userland, there’s even probes to describe the crossing between the kernel and userland (and vice versa) using the <code><em>fbt</em></code> provider.
+</p>
+<p>Here’s a visualization showing a <i>very very</i> small percentage of the DTrace probes on your computer.
+</p><div class="image-90"><img src="graphics/img162.png"  alt="" title="" /></div>
+<p>Narrow down your focus to just two probes of the thousands by exploring the <code><em>open</em></code> system call and the <code><em>open_nocancel</em></code> system call. Both of these functions are implemented in the kernel and are responsible for any type of file openings for reading, writing, or both.
+</p>
+<p>The system <code>open</code> has the following function signature:
+</p><pre class="code-block">int open(const char *path, int oflag, ...);</pre>
+<p>Internally, <code>open</code> will sometimes call the <code>open_nocancel</code>, which has the following function signature:
+</p><pre class="code-block">int open_nocancel(const char *path, int flags, mode_t mode);</pre>
+<p>Both of these functions contain a <code>char*</code> as the first parameter. You’ve already grabbed parameters from functions before in DTrace probes using <code>arg0</code> and <code>arg1</code>.
+</p>
+<p>What you haven’t done yet is dereference those pointers to look at their data. Just as in the previous chapters with <code>SBValue</code>, you can spelunk in memory with DTrace and even get the string representation of this first parameter in the <code>open</code> system calls.
+</p>
+<p>There’s one gotcha though. A DTrace script executes in the kernel. The <code>argX</code> parameters are given to you, but these are pointers to the value in the address space of the program. However, DTrace runs in the kernel. So you need to manually copy whatever data you are reading into the kernel’s memory space.
+</p>
+<p>This is done through the <code><em>copyin</em></code> and <code><em>copyinstr</em></code> functions. <code>copyin</code> will take an address with the amount of bytes you want to read, while the <code>copyinstr</code> expects to copy a <code>char*</code> representation.
+</p>
+<p>In the case of the <code>open</code> family of system calls, you could read the first parameter as a string with the following DTrace clause:
+</p><pre class="code-block">sudo dtrace -n &apos;syscall::open:entry { printf(&quot;%s&quot;, copyinstr(arg0)); }&apos;</pre>
+<p>For example, if a process whose PID was 12345 was attempting to open  <code>&quot;/Applications/SomeApp.app/&quot;</code>, DTrace could read this first parameter using <code>copyinstr(arg0)</code>.
+</p><div class="image-100"><img src="graphics/img163.png"  alt="" title="" /></div>
+<p>For this particular example, DTrace will read in <code>arg0</code>, which for this example equals <code>0x7fff58034300</code>. With the <code>copyinstr</code> function, the <code>0x7fff58034300</code> memory address will be dereferenced to grab the <code>char*</code> representation for the pathname, <code>&quot;/Applications/SomeApp.app/&quot;</code>.
+</p>
+<h2 class="segment-chapter">Playing with open syscalls</h2>
+
+<p>With the knowledge you need to inspect process memory, create a DTrace script that monitors the open family of system calls. In <code>Terminal</code>, type the following:
+</p><pre class="code-block">sudo dtrace -qn &apos;syscall::open*:entry { printf(&quot;%s opened %s\n&quot;, execname, copyinstr(arg0)); ustack(); }&apos;</pre>
+<p>This will print the contents of <code>open</code> (or <code>open_nocancel</code>) along with the program that called the <code>open*</code> system call with the userland stack trace that was responsible for the call.
+</p>
+<p>Isn’t DTrace awesome!?
+</p>
+<p>Augment your <code>open</code> family of system calls to only focus on the <em>Finding Ray</em> process.
+</p><pre class="code-block">sudo dtrace -qn &apos;syscall::open*:entry / execname == &quot;Finding Ray&quot; / { printf(&quot;%s opened %s\n&quot;, execname, copyinstr(arg0)); ustack(); }&apos;</pre>
+<div class="note">
+<p><em>Note</em>: The actions you perform with DTrace can sometimes produce errors to <code>stderr</code> in Terminal. Depending on the error, you can get around this by creating checks for appropriate input with a DTrace <code>predicate</code>, or you can filter your <code>probe description</code> query with less probes. An alternative to this is to ignore all errors produced by DTrace by adding <code>2&gt;/dev/null</code> in your DTrace one-liner. This effectively tells your DTrace one-liner to pipe any <code>stderr</code> content (2 is the standard error file descriptor) to be ignored. I often use this solution to cast a wide net on probes that can be error-prone, but ignore any errors that my tracing produces.
+</p></div>
+
+<p>Rebuild an launch the application.
+</p>
+<p>Stack traces will now only be displayed on any <code>open*</code> system call being called from the <em>Finding Ray</em> application. Play around with the app in the Simulator a bit and see if you can make it output something!
+</p>
+<h3 class="segment-chapter">Filtering open syscalls by paths</h3>
+
+<p>Inside the <em>Finding Ray</em> project, I remember I used the image named <code>Ray.pdf</code> for something, but I can’t remember where. Good thing I have DTrace along with <code>grep</code> to hunt down the location of where <code>Ray.pdf</code> is being opened.
+</p>
+<p>Kill your current DTrace script and modify the script so it pipes <code>stderr</code> straight to hell. While you&apos;re doing that, append a <code>grep</code> query to it so it looks like:
+</p><pre class="code-block">sudo dtrace -qn &apos;syscall::open*:entry / execname == &quot;Finding Ray&quot; / { printf(&quot;%s opened %s\n&quot;, execname, copyinstr(arg0)); ustack(); }&apos; 2&gt;/dev/null | grep Ray.png -A40</pre>
+<p>This pipes all stderr to nowhere, stdout to <code>grep</code> and searches for any references to the <code>Ray.png</code> image. If there’s a hit, print out the next 40 lines.
+</p>
+<div class="note">
+<p><em>Note</em>: There’s actually a pretty awesome DTrace script called <code><em>opensnoop</em></code> found in <code>/usr/bin/</code> on your computer which has many options for monitoring the <code>open</code> family of system calls and is wayyyyyyyy easier to use than writing these scripts. But you wouldn’t learn anything if I just gave you the easy way out, right? Check out this script on your own time, with a good ol’ <code>man opensnoop</code>. You won’t be disappointed in what it can do.
+</p></div>
+
+<p>There’s a more elegant way to do this without relying on piping (well, more elegant in <i>my</i> opinion). You can use the predicate section of the DTrace clause to search the userland <code>char*</code> input for the <code>Ray.png</code> string.
+</p>
+<p>You’ll use the <code><em>strstr</em></code> DTrace function to do this check. This function takes two strings and returns a pointer to the first occurrence of the second string in the first string. If it can’t find an occurrence, it will return <code>NULL</code>. This means you can check if this function equals <code>NULL</code> in the predicate to search for a path which contains <code>Ray.png</code>!
+</p>
+<p>Augment your increasingly ugly — er, <i>complex</i> DTrace script to look like the following:
+</p><pre class="code-block">sudo dtrace -qn &apos;syscall::open*:entry / execname == &quot;Finding Ray&quot; &amp;&amp; strstr(copyinstr(arg0), &quot;Ray.png&quot;) != NULL / { printf(&quot;%s opened %s\n&quot;, execname, copyinstr(arg0)); ustack(); }&apos; 2&gt;/dev/null</pre>
+<p>Build and rerun the application.
+</p>
+<p>You threw out the <code>grep</code> piping and replaced it with a conditional check in the predicate for anything containing the name <code>Ray.png</code> that’s opened in the <em>Finding Ray</em> process.
+</p>
+<p>In addition, you’ve easily pinpointed the stack trace responsible for opening the Ray.png image.
+</p>
+<h2 class="segment-chapter">DTrace &amp; destructive actions</h2>
+
+<div class="note">
+<p><em>Note</em>: What I am about to show you is very dangerous.
+</p>
+<p>Let me repeat that: This next bit is very dangerous.
+</p>
+<p>If you screw up a command you could lose some of your beloved images. Follow along only at your own risk!
+</p>
+<p>In fact, to be safe, please close any applications that pertain to using photos (i.e. Photos, PhotoShop, etc). Neither I, nor the publisher are legally responsible for anything that could happen on your computer.
+</p>
+<p>You have been warned!
+</p></div>
+
+<p>Heh... I bet that above legal section made you nervous.
+</p>
+<p>You’ll use DTrace to perform a <em>destructive action</em>. That is, normally DTrace will only monitor your computer, but now you’ll actually alter logic in your program.
+</p>
+<p>You’ll monitor the <code>open</code> family of system calls that are executed by the <em>Finding Ray</em> app. If one of the <code>open</code> system calls contain the phrase <code>.png</code> in its first parameter (aka the parameter of type <code>char*</code> to the path it’s opening), you’ll replace that argument with a different PNG image.
+</p>
+<p>This can all be accomplished with the <code><em>copyout</em></code> and <code><em>copyoutstr</em></code> DTrace commands. You’ll use the <code>copyoutstr</code> explicitly for this example. You’ll notice these name are similar to <code>copyin</code> and <code>copyinstr</code>. The <code>in</code> and <code>out</code> in this context refer to the direction in which you’re copying data, either into where DTrace can read it, or out to where the process can read it.
+</p>
+<p>In the <em>projects</em> directory, there is a standalone image named <em>troll.png</em>. Create a new window in Finder with <em>⌘ + N</em>, then navigate to your home directory by pressing <em>⌘ + Shift + H</em>. Drop <em>troll.png</em> into this directory (feel free to remove it when this chapter is done). There’s a method to this madness — just bear with me!
+</p>
+<p>Why did you need to do this? You’re about to write to memory in an existing program. There’s only a finite amount of space that is already allocated for this string in the program’s memory. This will likely be some long string because you’re in the iPhone Simulator and your process (mostly) reads images found in its own sandbox.
+</p>
+<p>Do you remember searching for <em>Ray.png</em>? Here’s that full path on my computer. Yours will obviously be different.
+</p><pre class="code-block">/Users/derekselander/Library/Developer/CoreSimulator/Devices/97F8BE2C-4547-470C-955F-3654A8347C41/data/Containers/Bundle/Application/102BDE66-79CB-453C-BA71-4062B2BC5297/Finding Ray.app/Ray.png</pre>
+<p>The plan of attack is to use DTrace with a shorter path to an image, which will result in something like this in the program’s memory:
+</p><pre class="code-block">/Users/derekselander/troll.png\0veloper/CoreSimulator/Devices/97F8BE2C-4547-470C-955F-3654A8347C41/data/Containers/Bundle/Application/102BDE66-79CB-453C-BA71-4062B2BC5297/Finding Ray.app/Ray.png</pre>
+<p>You see that <code>\0</code> in there? That’s the <code>NULL</code> terminator for <code>char*</code>. So essentially this string is really just:
+</p><pre class="code-block">/Users/derekselander/troll.png</pre>
+<p>Because that’s how <code>NULL</code> terminated strings work!
+</p>
+<h3 class="segment-chapter">Getting your path length</h3>
+
+<p>When writing data out, you’ll need to figure out how many <code>char</code>s your fullpath is to the <code>troll.png</code>. I know the length of mine, but unfortunately, I don’t know your name nor the name of your computer’s home directory.
+</p>
+<p>Type the following in <code>Terminal</code>:
+</p><pre class="code-block"><span class="hljs-built_in">echo</span> ~/troll.png</pre>
+<p>This will be dump the fullpath to the troll.png image. Hold onto this for a second as you’ll paste this into your script. Also figure out how many characters this is in <code>Terminal</code>:
+</p><pre class="code-block">echo ~/troll.png | wc -m</pre>
+<p>In my case, <code>/Users/derekselander/troll.png</code> is 31 <code>char</code>’s. But here’s the gotcha: <i>You need to account for the null terminator</i>. This means the total length I need to insert my new string needs to be an existing <code>char*</code> of length 32 or greater.
+</p>
+<p>The <code>arg0</code> in <code>open*</code> is pointing to something in memory. If you were to write in this location with something longer than this string, then this could corrupt memory and kill the program. Obviously, you don’t want this, so what you’ll do is stick <em>troll.png</em> in a directory that has a shorter character count.
+</p>
+<p>You’ll also perform checks via the DTrace predicate to ensure you have enough room as well. C’mon, you’re a thorough and diligent programmer, right?
+</p>
+<p>Type the following in <code>Terminal</code>, replacing <code>/Users/derekselander</code> and <code>32</code> with your values:
+</p><pre class="code-block">sudo dtrace -wn &apos;syscall::open*:entry / execname == &quot;Finding Ray&quot; &amp;&amp; arg0 &gt; 0xfffffffe &amp;&amp; strstr(copyinstr(arg0), &quot;.png&quot;) != NULL &amp;&amp; strlen(copyinstr(arg0)) &gt;= 32 / { this-&gt;a = &quot;/Users/derekselander/troll.png&quot;; copyoutstr(this-&gt;a, arg0, 32); }&apos;</pre>
+<p>Rebuild and run <em>Finding Ray</em> while this new DTrace script is active.
+</p>
+<p>Provided you’ve executed everything correctly, each time the <em>Finding Ray</em> process tries to open a file that contains the phrase &quot;.png&quot;, you’ll return troll.png instead.
+</p><div class="image-30"><img src="graphics/img164.png"  alt="" title="" /></div>
+<h3 class="segment-chapter">Other destructive actions</h3>
+
+<p>In addition to <code>copyoutstr</code> and <code>copyout</code>, DTrace has some other destructive actions worth noting:
+</p>
+<ul>
+<li>
+<p><em>stop(void)</em>: This will freeze the currently running <i>userland</i> process (given by the <em>pid</em> built-in argument). This is ideal if you want to stop execution of a userland program, attach LLDB to it and explore it further.
+</p></li>
+
+<li>
+<p><em>raise(int signal)</em>: This will raise a signal to the process responsible for a probe.
+</p></li>
+</ul>
+
+<ul>
+<li>
+<p><em>system(string program, ...)</em>: This lets you execute a command just as if you were in <code>Terminal</code>. This has the added benefit of letting you access all the DTrace built-in variables, such as <code>execname</code> and <code>probemod</code>, to use in a <code>printf</code>-style formatting.
+</p></li>
+</ul>
+
+<p>I encourage you to explore these destructive actions (especially the <code>stop()</code> action) on your own time. That being said, be careful with that <code>system</code> function. You can do a lot of damage really easily if used incorrectly.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>There are many powerful DTrace scripts on your macOS machine. You can hunt for them using the <code>man -k dtrace</code>, then systematically <code>man</code>’ing what each script does. In addition, you can learn a lot by studying the code in them. Remember, these are <i>scripts</i>, not compiled executables, so source-code is fair game.
+</p>
+<p>Also, be very careful with destructive actions. That being said, you can put Ray Wenderlich <i>everywhere on your computer</i>:
+</p><div class="image-70"><img src="graphics/img165.png"  alt="" title="" /></div>
+<p>Isn’t that what you’ve always wanted?
+</p>
+<p>In all seriousness, you can do some pretty crazy stuff to your computer and gain a lot of insight using DTrace.
+</p></body></html>

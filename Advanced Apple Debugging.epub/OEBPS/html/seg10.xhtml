@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 3: Attaching with LLDB</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 3: Attaching to a program</h1>
+
+<p>Now that you’ve learned about the two most essential commands, <code>help</code> and <code>apropos</code>, it’s time to investigate how LLDB attaches itself to processes. You’ll learn all the different ways you can attach LLDB to processes using various options, as well as what happens behind the scenes when attaching to processes.
+</p>
+<p>The phrase of LLDB “attaching” is actually a bit misleading. A program named <code>debugserver</code> (found in <code>Xcode.app/Contents/SharedFrameworks/LLDB.framework/Resources/</code>) is responsible for attaching to a target process.
+</p>
+<p>If it’s a remote process, such as an iOS, watchOS or tvOS application running on a remote device, a remote <code>debugserver</code> gets launched on that remote device. It’s LLDB’s job to launch, connect, and coordinate with the <code>debugserver</code> to handle all the interactions in debugging an application.
+</p>
+<h3 class="segment-chapter">Attaching to an existing process</h3>
+
+<p>As you’ve already seen in Chapter 1, you can attach to a process like so:
+</p><pre class="code-block">lldb -n Xcode</pre>
+<p>However, there&apos;s other ways to do the same thing. You can attach to Xcode by providing the process identifier, or <em>PID</em>, of a running program.
+</p>
+<p>Open Xcode, then open a new <code>Terminal</code> session, and finally run the following:
+</p><pre class="code-block">pgrep -x Xcode</pre>
+<p>This will output the PID of the Xcode process.
+</p>
+<p>Next, run the following, replacing <code>89944</code> with the number output from the command above:
+</p><pre class="code-block">lldb -p 89944</pre>
+<p>This tells LLDB to attach to the process with the given PID. In this case, this is your running Xcode process.
+</p>
+<h3 class="segment-chapter">Attaching to a future process</h3>
+
+<p>The previous command only addresses a running process. If Xcode isn’t running, or is already attached to a debugger, the previous commands will fail. How can you catch a process that&apos;s about to be launched, if you don’t know the PID yet?
+</p>
+<p>You can do that with the <code>-w</code> argument, which causes LLDB to wait until a process launches with a PID or executable name matching the criteria supplied using the <code>-p</code> or <code>-n</code> argument.
+</p>
+<p>For example, kill your existing LLDB session by pressing <em>Ctrl + D</em> in your Terminal window then type the following:
+</p><pre class="code-block">lldb -n Finder -w </pre>
+<p>This will tell LLDB to attach to the process named Finder whenever it next launches. Next, open a new Terminal tab, and enter the following:
+</p><pre class="code-block">pkill Finder</pre>
+<p>This will kill the Finder process and force it to restart. macOS will automatically relaunch Finder when it’s killed. Switch back to your first Terminal tab and you’ll notice LLDB has now attached itself to the newly created Finder process.
+</p>
+<p>Another way to attach to a process is to specify the path to the executable and manually launch the process at your convenience:
+</p><pre class="code-block">lldb <span class="hljs-_">-f</span> /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder</pre>
+<p>This will set Finder as the executable to launch. Once you’re ready to begin the debug session, simply type the following into the LLDB session:
+</p><pre class="code-block">(lldb) process launch</pre>
+<div class="note">
+<p><em>Note</em>: An interesting side effect is that <code>stderr</code> output (i.e. <code>NSLog</code> &amp; company) are automatically sent to the Terminal window when manually launching a process. Other LLDB attaching configurations don’t do this automatically.
+</p></div>
+
+<h3 class="segment-chapter">Options while launching</h3>
+
+<p>The <code>process launch</code> command comes with a suite of options worth further exploration. If you’re curious and want to see the full list of available options for <code>process launch</code>, simply type <code>help process launch</code>.
+</p>
+<p>Close previous LLDB sessions, open a new Terminal window and type the following:
+</p><pre class="code-block">lldb <span class="hljs-_">-f</span> /bin/ls</pre>
+<p>This tells LLDB to use <code>/bin/ls</code> (the file listing command) as the target executable.
+</p>
+<div class="note">
+<p><em>Note</em>: If you omit the <code>-f</code> option, LLDB will automatically infer the first argument to be the executable to launch and debug. When debugging Terminal executables, I&apos;ll oftentimes type <code>lldb $(which ls)</code> (or equivalent), which then gets translated to <code>lldb /bin/ls</code>.
+</p></div>
+
+<p>You’ll see the following output:
+</p><pre class="code-block">(lldb) target create &quot;/bin/ls&quot;
+Current executable set to &apos;/bin/ls&apos; (x86_64).</pre>
+<p>Since <code>ls</code> is a quick program (it launches, does its job, then exits) you’ll run this program multiple times with different arguments to explore what each does.
+</p>
+<p>To launch <code>ls</code> from LLDB with no arguments. Enter the following:
+</p><pre class="code-block">(lldb) process launch</pre>
+<p>You’ll see the following output:
+</p><pre class="code-block">Process 7681 launched: &apos;/bin/ls&apos; (x86_64)
+... # Omitted directory listing output
+Process 7681 exited with status = 0 (0x00000000) </pre>
+<p>An <code>ls</code> process will launch in the directory you started in. You can change the current working directory by telling LLDB where to launch with the <code>-w</code> option. Enter the following:
+</p><pre class="code-block">(lldb) process launch -w /Applications</pre>
+<p>This will launch <code>ls</code> from within the <code>/Applications</code> directory. This is equivalent to the following:
+</p><pre class="code-block">$ <span class="hljs-built_in">cd</span> /Applications
+$ ls</pre>
+<p>There’s yet <i>another</i> way to do this. Instead of telling LLDB to change to a directory then run the program, you can pass arguments to the program directly.
+</p>
+<p>Try the following:
+</p><pre class="code-block">(lldb) process launch -- /Applications</pre>
+<p>This has the same effect as the previous command, but this time it’s doing the following:
+</p><pre class="code-block">$ ls /Applications</pre>
+<p>Again, this spits out all your macOS programs, but you specified an argument instead of changing the starting directory. What about specifying your desktop directory as a launch argument? Try running this:
+</p><pre class="code-block">(lldb) process launch -- ~/Desktop</pre>
+<p>You’ll see the following:
+</p><pre class="code-block">Process 8103 launched: &apos;/bin/ls&apos; (x86_64)
+ls: ~/Desktop: No such file or directory
+Process 8103 exited with status = 1 (0x00000001) </pre>
+<p>Uh-oh, that didn’t work. You need the shell to expand the <i>tilde</i> in the argument. Try this instead:
+</p><pre class="code-block">(lldb) process launch -X true -- ~/Desktop</pre>
+<p>The <code>-X</code> option expands any shell arguments you provide, such as the tilde. There’s a shortcut in LLDB for this: simply type <code>run</code>. To learn more about creating your own command shortcuts, check out Chapter 8, “Persisting and Customizing Commands”.
+</p>
+<p>Type the following to see the documentation for <code>run</code>:
+</p><pre class="code-block">(lldb) help run</pre>
+<p>You’ll see the following:
+</p><pre class="code-block">...
+Command Options Usage:
+  run [&lt;run-args&gt;]
+
+
+&apos;run&apos; is an abbreviation for &apos;process launch -X true --&apos;</pre>
+<p>See? It’s an abbreviation of the command you just ran! Give the command a go by typing the following:
+</p><pre class="code-block">(lldb) run ~/Desktop</pre>
+<p>What about changing console output to a different location? You’ve already tried changing <code>stderr</code> to a different Terminal tab in Chapter 1 using the <code>-e</code> flag, but how about <code>stdout</code>?
+</p>
+<p>Type the following:
+</p><pre class="code-block">(lldb) process launch -o /tmp/ls_output.txt -- /Applications</pre>
+<p>The <code>-o</code> option tells LLDB to pipe <code>stdout</code> to the given file.
+</p>
+<p>You’ll see the following output:
+</p><pre class="code-block">Process 15194 launched: &apos;/bin/ls&apos; (x86_64)
+Process 15194 exited with status = 0 (0x00000000) </pre>
+<p>Notice there’s no output directly from <code>ls</code>.
+</p>
+<p>Open another Terminal tab and run the following:
+</p><pre class="code-block">cat /tmp/ls_output.txt</pre>
+<p>It’s your applications directory output again, as expected!
+</p>
+<p>There is also an option <code>-i</code> for <code>stdin</code> as well. First, type the following:
+</p><pre class="code-block">(lldb) target delete</pre>
+<p>This removes <code>ls</code> as the target. Next, type this:
+</p><pre class="code-block">(lldb) target create /usr/bin/wc</pre>
+<p>This sets <code>/usr/bin/wc</code> as the new target. <code>wc</code> can be used to count characters, words or lines in the input given to <code>stdin</code>.
+</p>
+<p>You’ve swapped target executables for your LLDB session from <code>ls</code> to <code>wc</code>. Now you need some data to provide to <code>wc</code>. Open a new Terminal tab and enter the following:
+</p><pre class="code-block"><span class="hljs-built_in">echo</span> <span class="hljs-string">"hello world"</span> &gt; /tmp/wc_input.txt</pre>
+<p>You’ll use this file to give <code>wc</code> some input.
+</p>
+<p>Switch back to the LLDB session and enter the following:
+</p><pre class="code-block">(lldb) process launch -i /tmp/wc_input.txt</pre>
+<p>You’ll see the following output:
+</p><pre class="code-block">Process 24511 launched: &apos;/usr/bin/wc&apos; (x86_64)
+       1       2      12
+Process 24511 exited with status = 0 (0x00000000) </pre>
+<p>This would be functionally equivalent to the following:
+</p><pre class="code-block">$ wc &lt; /tmp/wc_input.txt</pre>
+<p>Sometimes you don’t want a <code>stdin</code> (standard input). This is useful for GUI programs such as Xcode, but doesn’t really help for Terminal commands such as <code>ls</code> and <code>wc</code>.
+</p>
+<p>To illustrate, run the <code>wc</code> target with no arguments, like so:
+</p><pre class="code-block">(lldb) run</pre>
+<p>The program will just sit there and hang because it’s expecting to read something from <code>stdin</code>.
+</p>
+<p>Give it some input by typing in <code>hello world</code>, press Return, then press <em>Control + D</em>, which is the end of transmission character. <code>wc</code> will parse the input and exit. You’ll see the same output as you did earlier when using the file as the input.
+</p>
+<p>Now, launch the process like this:
+</p><pre class="code-block">(lldb) process launch -n</pre>
+<p>You’ll see that <code>wc</code> exits immediately with the following output:
+</p><pre class="code-block">Process 28849 launched: &apos;/usr/bin/wc&apos; (x86_64)
+Process 28849 exited with status = 0 (0x00000000) </pre>
+<p>The <code>-n</code> option tells LLDB not to create a <code>stdin</code>; therefore <code>wc</code> has no data to work with and exits immediately.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>There are a few more interesting options to play with (which you can find via the <code>help</code> command), but that&apos;s for you to explore on your own time.
+</p>
+<p>For now, try attaching to GUI and non-GUI programs alike. It might seem like you can&apos;t understand much without the source code, but you&apos;ll find out in the upcoming sections how much information and control you have over these programs.
+</p></body></html>

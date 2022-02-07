@@ -1,0 +1,693 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 27: DTrace vs objc_msgSend</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 27: Dtrace vs objc_msgSend</h1>
+
+<p>You’ve seen how powerful DTrace is against Objective-C and Swift code which you have the source for, or code that resides in a Framework like <code>UIKit</code>. You’ve used DTrace to trace this code and make interesting tweaks all while performing zero modifications to already compiled source code.
+</p>
+<p>Unfortunately, when DTrace is put up against a stripped executable, it is unable to create any probes to dynamically inspect those functions.
+</p>
+<p>However, when exploring Apple code, you still have one very powerful ally on your side: <code><em>objc_msgSend</em></code>. In this chapter you’ll use DTrace to hook <code>objc_msgSend</code>’s <em>entry</em> probe and pull out the class name along with the Objective-C selector for that class.
+</p>
+<p>By the end of this chapter, you’ll have LLDB generating a DTrace script which only generates tracing info for code implemented within the main executable that calls <code><em>objc_msgSend</em></code>.
+</p>
+<h2 class="segment-chapter">Building your proof-of-concept</h2>
+
+<p>Included in the <em>starter</em> folder is an app called <em>VCTransitions</em>, which is a very basic Objective-C/Swift application that showcases a normal <code>UINavigationController</code> push transition, as well as a custom push transition.
+</p>
+<p>Open up this Xcode project, build and run on the iPhone X Simulator and take a quick look around.
+</p>
+<p>It&apos;s important to note, there are two schemes inside this application: <em>VCTransitions</em> and <em>Stripped VCTransitions</em>. Make sure to select the <i>VCTransitions</i> scheme when running. We&apos;ll talk more about the Stripped VCTransitions scheme in a second.
+</p>
+<div class="note">
+<p><em>Note</em>: Normally I don’t care about the exact version of the software you’re running, so long as it’s iOS 11. This time, however, I insist you run <em>iOS 11.1.x (or earlier)</em> since you’ll be viewing assembly that could change in a future release. You’ll be exploring some assembly in this chapter, and I can’t guarantee it’s unchanged in a new iOS version that I’ve not viewed (at the time of writing).
+</p></div>
+<div class="image-20"><img src="graphics/img166.png"  alt="" title="" /></div>
+<p>There are buttons to perform the two navigation pushes, and there’s also a button named <em>Execute Methods</em> that will loop through all known Objective-C methods which are implemented/overriden by a given <code>Class</code>. If the method takes no parameters, it executes it.
+</p>
+<p>For example, the first view controller displayed is <code>ObjCViewController</code>. If you tap <em>Execute Methods</em>, it will call <code><em>anEmptyMethod</em></code> as well as all the getters for the overridden properties, since all of those methods don’t require parameters.
+</p>
+<p>Now, onto the fun stuff.
+</p>
+<p>Jump over to <em>OjbCViewController.m</em> and take a look at the <code>IBAction</code> methods implemented by this class.
+</p>
+<p>Make a DTrace one-liner in Terminal to ensure that you can see these methods getting hit.
+</p>
+<p>Make sure the Simulator is alive and running the <em>VCTransitions</em> project.
+</p>
+<p>In Terminal:
+</p><pre class="code-block">sudo dtrace -n <span class="hljs-string">'objc$target:ObjCViewController::entry'</span> -p `pgrep VCTransitions`</pre>
+<p>Press Enter to start this bad boy up. Enter your password when DTrace asks you then head back over to the Simulator and start tapping on buttons. You’ll see the <code>Terminal</code> DTrace window fill up with the <code>IBAction</code> methods implemented by <code>ObjCViewController</code>.
+</p><div class="image-90"><img src="graphics/img167.png"  alt="" title="" /></div>
+<p>Now, tap one of the <em>push</em> buttons so you’re on the <em>SwiftViewController</em> view controller.
+</p>
+<p>Although this is a subclass of <code>UIViewController</code>, tapping on the <code>IBAction</code>s will not produce any results for the <em>objcPID</em> probe. Even though there are dynamic methods implemented or overridden by <code>SwiftViewController</code>, <i>and</i> being executed through <code>objc_msgSend</code>, the actual code is Swift code (even those <code>@objc</code> bridging methods).
+</p>
+<p>Pop quiz: If <code>SwiftViewController</code> contains the following code:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">SwiftViewController</span>: <span class="hljs-title">UIViewController</span>, <span class="hljs-title">UIViewControllerTransitioningDelegate</span> </span>{
+  <span class="hljs-meta">@objc</span> <span class="hljs-keyword">dynamic</span> <span class="hljs-keyword">var</span> coolViewDTraceTest: <span class="hljs-type">UIView</span>? = <span class="hljs-literal">nil</span>
+  <span class="hljs-meta">@objc</span> <span class="hljs-keyword">dynamic</span> <span class="hljs-keyword">var</span> coolBooleanDTraceTest: <span class="hljs-type">Bool</span> = <span class="hljs-literal">false</span>
+
+  <span class="hljs-comment">// ...</span></pre>
+<p>Will an Objective-C DTrace probe pick up <code>coolBooleanDTraceTest</code> or <code>coolViewDTraceTest</code>?
+</p>
+<p>To answer this, let&apos;s first see if these Swift properties are even exposed as Objetive-C probes. They should be, right? They have the <code>@objc dynamic</code> attributes.
+</p>
+<p>Type the following in Terminal:
+</p><pre class="code-block">sudo dtrace -ln <span class="hljs-string">'objc$target::*cool*Test*:entry'</span> -p `pgrep VCTransitions`</pre>
+<p>Dang, only the properties for the Objective-C <code>ObjCViewController</code> are displayed and not <code>SwiftViewController</code>s! This is because of Swift proposition 160 <a href="https://github.com/apple/swift-evolution/blob/master/proposals/0160-objc-inference.md">https://github.com/apple/swift-evolution/blob/master/proposals/0160-objc-inference.md</a>, which includes a proposition that <code>NSObject</code>&apos;s no longer infer <code>@objc</code>. In addition, Swift will not create an Objective-C symbol even for dynamic code.
+</p>
+<p>This means you&apos;ll have to use the non-Objective-C provider to query Swift DTrace probes.
+</p>
+<p>You can confirm this by augmenting your DTrace script to dump <i>any</i> methods that include the word <i>cool</i> followed sometime later by the word <i>Test</i>, like so:
+</p><pre class="code-block">sudo dtrace -n <span class="hljs-string">'pid$target::*cool*Test*:entry'</span> -p `pgrep VCTransitions` </pre>
+<p>This is another reason to go after <code>objc_msgSend</code> instead of the <code>objc$target</code> probe, because calls to <code>objc_msgSend</code> will catch dynamically executed Swift code, where objc$target will miss them.
+</p>
+<h3 class="segment-chapter">Repeating your steps on a stripped build</h3>
+
+<p>Included within the project is a scheme called <em>Stripped VCTransitions</em>.
+</p><div class="image-60"><img src="graphics/img168.png"  alt="" title="" /></div>
+<p>This runs the exact same target (executable) as the <em>VCTransitions</em> app, except Xcode will generate a stripped build that doesn’t contain any debugging information.
+</p>
+<p>Select the <em>Stripped VCTransitions</em> scheme, make sure it’s on the iPhone X Simulator (again on 11.1.x or earlier) and build and run.
+</p>
+<p>Once running, pause the application and bring up LLDB. Search for any code that belongs to <code>SwiftViewController</code> using your newly created <code>image lookup</code> alternative, <code>lookup</code> command, you created in Chapter 22, “SB Examples, Improved Lookup” (if you skipped that chapter, default back to using <code>image lookup -rn</code>).
+</p><pre class="code-block">(lldb) lookup SwiftViewController</pre>
+<p>Hmm... you won’t get any hits. Maybe it’s a Swift bug? Try dumping everything pertaining to <em>ObjCViewController</em>:
+</p><pre class="code-block">(lldb) lookup ObjCViewController</pre>
+<p>Still nothing. What gives?
+</p>
+<p>This executable has been <em>stripped</em> of it’s information. You can’t use the debugging symbols typically available to you to reference an address in memory.
+</p>
+<p>However, LLDB <i>is</i> smart enough to realize these locations in memory are, in fact, functions. LLDB will generate a unique function name for the methods it doesn’t have information for. The automatically generated function name will take the following form:
+</p><pre class="code-block">___lldb_unnamed_symbol[FUNCTION_ID]$$[MODULE_NAME]</pre>
+<p>This means you can list all the functions LLDB has generated inside the <em>VCTransitions</em> executable with the following <code>lookup</code> command:
+</p><pre class="code-block">(lldb) lookup VCTransitions</pre>
+<p>I get 292 hits, with the following truncated output:
+</p><pre class="code-block">...
+___lldb_unnamed_symbol293$$<span class="hljs-type">VCTransitions</span>
+
+___lldb_unnamed_symbol294$$<span class="hljs-type">VCTransitions</span>
+
+___lldb_unnamed_symbol295$$<span class="hljs-type">VCTransitions</span>
+
+___lldb_unnamed_symbol296$$<span class="hljs-type">VCTransitions</span></pre>
+<p>Dang, LLDB can’t get the names of these functions. Do you think DTrace can read content in a stripped binary?
+</p>
+<p>Type the following in <code>Terminal</code>:
+</p><pre class="code-block">sudo dtrace -ln 'objc$target:<span class="hljs-type">ObjCViewController</span>::' -p `pgrep <span class="hljs-type">VCTransitions</span>`</pre>
+<p>This queries the <em>VCTransitions</em> process for the count of probes containing the module <code>ObjCViewController</code>, which is DTrace’s way of referencing an Objective-C class.
+</p>
+<p>I get the following:
+</p><pre class="code-block">   <span class="hljs-type">ID</span>   <span class="hljs-type">PROVIDER</span>            <span class="hljs-type">MODULE</span>                          <span class="hljs-type">FUNCTION</span> <span class="hljs-type">NAME</span>
+dtrace: failed to match objc57009:<span class="hljs-type">ObjCViewController</span>:: <span class="hljs-type">No</span> probe matches description</pre>
+<p>I can tell my PID is 57009 and I get 0 hits!
+</p>
+<p>If I wanted to ensure that <code>ObjCViewController</code> was producing valid probes (which you saw earlier), simply rebuild this project using the non-stripped Xcode scheme, then run the above Terminal command again. I’ll leave that exercise to you if you’re interested in proving this works.
+</p>
+<h2 class="segment-chapter">How to get around no probes in a stripped binary</h2>
+
+<p>So how can you architect a DTrace action and/or probe to get around this hurdle of not being able to inspect a stripped binary?
+</p>
+<p>Since you know Objective-C (and dynamic Swift) methods need to go through <code>objc_msgSend</code> (or similar for super calls), you can use the knowledge you’ve learned about <code>objc_msgSend</code> to figure out how to create a nice DTrace action that prints out the name of the class along with the Objective-C selector.
+</p>
+<p>A quick reminder about how <code>objc_msgSend</code> works. The function signature looks like this:
+</p><pre class="code-block">objc_msgSend(instance_or_class, SEL,  ...);</pre>
+<p>So, <code>objc_msgSend</code> takes a class or instance as the first parameter, the Objective-C selector as the second, followed by a variable amount of arguments.
+</p>
+<p>With that in mind, if you had the following code:
+</p><pre class="code-block"><span class="hljs-built_in">UIViewController</span> *vc = [<span class="hljs-built_in">UIViewController</span> new];
+[vc setTitle:<span class="hljs-string">@"yay, DTrace"</span>];</pre>
+<p>The compiler would translate it into the following pseudocode:
+</p><pre class="code-block">vc = objc_msgSend(<span class="hljs-built_in">UIViewControllerClassRef</span>, <span class="hljs-string">"new"</span>);
+objc_msgSend(vc, <span class="hljs-string">"setTitle"</span>, <span class="hljs-string">@"yay, DTrace"</span>);</pre>
+<p>From a DTrace standpoint, getting the Objective-C selector is rather easy. Just <code>copyinstr(arg1)</code> and you’re golden. As you’ve learned earlier, this will copy the pointer from <code>arg1</code>, the Objective-C selector (aka a <code>char*</code>), into kernel-land so DTrace can read it.
+</p>
+<p>Now for the hard part: you want the class name of the first parameter passed into <code>objc_msgSend</code> as a <code>char*</code>.
+</p>
+<p>DTrace won’t let you execute arbitrary methods, so you can’t rely on the Objective-C runtime, or any of the methods it implements, to dig the information out for you.
+</p>
+<p>Instead, you get to go spelunking through the memory of the <code>arg0</code> instance and find the <code>char*</code> yourself, which represents the class name, then automate it into a DTrace script.
+</p>
+<p>Hey, this is the culmination of your DTrace skills coming together! You might as well go all out.
+</p>
+<h2 class="segment-chapter">Researching method calls using... DTrace!</h2>
+
+<p>Let’s see if there are any documented ways to go after this thing. In the <em>objc/runtime.h</em> header, you have the following declaration:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">objc_class</span> </span>{
+    <span class="hljs-type">Class</span> isa  <span class="hljs-type">OBJC_ISA_AVAILABILITY</span>;
+
+#<span class="hljs-keyword">if</span> !__OBJC2__
+    <span class="hljs-type">Class</span> super_class                                        <span class="hljs-type">OBJC2_UNAVAILABLE</span>;
+    const char *name                                         <span class="hljs-type">OBJC2_UNAVAILABLE</span>;
+    long version                                             <span class="hljs-type">OBJC2_UNAVAILABLE</span>;
+    long info                                                <span class="hljs-type">OBJC2_UNAVAILABLE</span>;
+    long instance_size                                       <span class="hljs-type">OBJC2_UNAVAILABLE</span>;
+    <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">objc_ivar_list</span> *<span class="hljs-title">ivars</span>                             <span class="hljs-title">OBJC2_UNAVAILABLE</span>;
+    <span class="hljs-title">struct</span> <span class="hljs-title">objc_method_list</span> **<span class="hljs-title">methodLists</span>                    <span class="hljs-title">OBJC2_UNAVAILABLE</span>;
+    <span class="hljs-title">struct</span> <span class="hljs-title">objc_cache</span> *<span class="hljs-title">cache</span>                                 <span class="hljs-title">OBJC2_UNAVAILABLE</span>;
+    <span class="hljs-title">struct</span> <span class="hljs-title">objc_protocol_list</span> *<span class="hljs-title">protocols</span>                     <span class="hljs-title">OBJC2_UNAVAILABLE</span>;
+#<span class="hljs-title">endif</span>
+
+} <span class="hljs-title">OBJC2_UNAVAILABLE</span>;
+/* <span class="hljs-title">Use</span> `<span class="hljs-title">Class</span>` <span class="hljs-title">instead</span> <span class="hljs-title">of</span> `<span class="hljs-title">struct</span> <span class="hljs-title">objc_class</span> *` */</span></pre>
+<p>Back in the Objective-C 2.0 days with a 64-bit machine, if you had a pointer at <code>X</code> which pointed to a valid class, you could get to that <code>const char *name</code> described in the <code>#if !__OBJC2__</code>:
+</p><pre class="code-block">po *(char *)(X + 0x10)</pre>
+<p>Unfortunately, this is rather dated. This class structure dates back to before Objective-C 2.0. Structs and pointer locations have long since changed. Apple has opted to make the current layout of the <code>objc_class</code> structs a little less public for your viewing pleasure.
+</p>
+<p>This means you need to hunt for a function that takes an Objective-C class (or instance of the class) and returns a <code>char*</code> for the class so we can figure out what it’s doing.
+</p>
+<p>Fortunately, jumping back to the <code>objc/runtime.h</code> header file, there’s also a function by the name of <code><em>class_getName</em></code>. Don’t believe me? Execute <code>open -h runtime.h</code> in Terminal.
+</p>
+<p>Looking at the headerfile, <code>class_getName</code> has the following signature:
+</p><pre class="code-block"><span class="hljs-comment">/** 
+ * Returns the name of a class.
+ * 
+ * @param cls A class object.
+ * 
+ * @return The name of the class, or the empty string if \e cls is \c Nil.
+ */</span>
+OBJC_EXPORT <span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *class_getName(Class cls) 
+    OBJC_AVAILABLE(<span class="hljs-number">10.5</span>, <span class="hljs-number">2.0</span>, <span class="hljs-number">9.0</span>, <span class="hljs-number">1.0</span>);</pre>
+<p>This function takes a <code>Class</code> and returns a <code>char*</code>. You’ll use DTrace to trace this method and see what methods this class is calling underneath the covers.
+</p>
+<p>Hopefully, your <em>VCTransitions</em> app is still running. If not, re-run the application. Once active, pause the application in LLDB.
+</p>
+<p>Get the reference to the <code>Class</code> representing a <code>UIView</code>:
+</p><pre class="code-block">(lldb) p/x [UIView class]</pre>
+<p>You’ll get something similar:
+</p><pre class="code-block">(Class) $0 = 0x0000000109d4ce60 UIView</pre>
+<p>Take this reference to the <code>UIView</code> class and apply it to the <code>class_getName</code> function:
+</p><pre class="code-block">(lldb) po class_getName(0x0000000109d4ce60)</pre>
+<p>You&apos;ll get a number? Why is that?
+</p><pre class="code-block">0x000000010999319f</pre>
+<p>Oh yeah, duh... this function returns a C <code>char*</code>. You have to cast those:
+</p><pre class="code-block">(lldb) po (char *)class_getName(0x0000000109d4ce60)</pre>
+<p>You’ll now use DTrace to trace all the non Objective-C methods <code>class_getName</code> calls behind the scenes.
+</p>
+<p>Jump over to a fresh Terminal session and execute the following DTrace one-liner:
+</p><pre class="code-block">sudo dtrace -n <span class="hljs-string">'pid$target:::entry'</span> -p `pgrep VCTransitions`</pre>
+<p>All the while, LLDB should still be suspended when setting up your DTrace script.
+</p>
+<p>Jump on back to LLDB and re-execute that <code>class_getName</code> function with the reference to the <code>UIView</code> class. Your pointer to the <code>UIView</code> class will be different:
+</p><pre class="code-block">(lldb) po (char *)class_getName(0x0000000109d4ce60)</pre>
+<p>After you’ve executed the above command, the DTrace script will spit out the following list of functions that were called for <code>class_getName</code>.
+</p><pre class="code-block">:~ sudo dtrace -n <span class="hljs-string">'pid$target:::entry'</span> -p `pgrep VCTransitions`
+Password:
+dtrace: description <span class="hljs-string">'pid$target:::entry'</span> matched 901911 probes
+CPU     ID                    FUNCTION:NAME
+  6 1405417              class_getName:entry 
+  6 1405416 objc_class::demangledName(bool):entry 
+  6 566986        _NSPrintForDebugger:entry 
+  6 1405847               objc_msgSend:entry </pre>
+<p>It looks like that <code>objc_class::demangledName(bool):</code> function is a fun place to explore.
+</p>
+<p>Kill the DTrace script. You don’t want it screwing with your LLDB breakpoints, as setting a DTrace probe on a LLDB breakpoint can have unexpected consequences.
+</p>
+<p>Once the DTrace script has terminated, set a breakpoint on <code>objc_class::demangledName(bool)</code> with LLDB, like so:
+</p><pre class="code-block">(lldb) b objc_class::demangledName(bool)</pre>
+<p>Rerun the expression, but tell LLDB to honor breakpoints:
+</p><pre class="code-block">(lldb) exp -i0 -O -- class_getName([UIView class])</pre>
+<p>As soon as you press enter, LLDB will stop on this <code>objc_class::demangledName(bool)</code> function.Take a good look at the assembly.
+</p><div class="image-95"><img src="graphics/img169.png"  alt="" title="" /></div>
+<h3 class="segment-chapter">Scary assembly, part I</h3>
+
+<p>As always, this stuff looks scary at first. But when you systematically go through it, it’s not that bad. You’ll actually break the assembly function into chunks to explore. The first chunk will be between offset <em>0-55.</em>
+</p>
+<p>Inspect the registers so you know what you’re dealing with:
+</p><pre class="code-block">(lldb) po $rdi</pre>
+<p>You’ll get <code>UIView</code> output which is the <code>description</code> method for the <code>UIView</code> class. But why is that the first parameter? The function signature seems to indicate it should be a <code>bool</code>.
+</p>
+<p>Well, this is a C++ function, and C++ is like Objective-C in the way you call functions on an object. There’s an implicit first parameter which is the object the function is being called on. As mentioned throughout this book, the instance passed in as the first register is not always the case with Swift.
+</p>
+<p>Move onto the second param:
+</p><pre class="code-block">(lldb) po $rsi</pre>
+<p>You’ll get <code>nil</code>. This is the <code>bool</code> parameter. And <code>nil</code> is 0, so this is <code>false</code>.
+</p>
+<p>Time to break this thing down. The offsets referred to here are the values within the angle brackets. So offset 13 is <code>&lt;+13&gt;</code>.
+</p><div class="image-95"><img src="graphics/img170.png"  alt="" title="" /></div>
+<ul>
+<li>
+<p><em>Offset 13</em>: After this line, the function prologue is over. Time for the actual meat of this function.
+</p></li>
+
+<li>
+<p><em>Offset 17</em>: This assigns <code>esi</code> to <code>r12d</code>. This is the Boolean that is passed in. We explored <code>rsi</code> earlier and saw it was 0, so <code>r12d</code> will be 0 as well.
+</p></li>
+
+<li>
+<p><em>Offset 20</em>: <code>rdi</code> contains the <code>UIView</code> class reference and is assigning this value to <code>r15</code>.
+</p></li>
+
+<li>
+<p><em>Offset 33</em>: This offsets <code>r15</code> by a value of <code>0x20</code> and dereferences it. i.e. <code>rax = (*([UIView class] + 0x20))</code>.
+</p></li>
+
+<li>
+<p><em>Offset 37</em>: The value stored in <code>rax</code> is AND’d with <code>0x7ffffffffff8</code> and stored into <code>rax</code>.
+</p></li>
+
+<li>
+<p><em>Offset 48</em>: The value at <code>rax</code> is offset by 0x38 and then dereferenced and stored into <code>rbx</code> i.e <code>rbx = *(rax + 0x38)</code>.
+</p></li>
+
+<li>
+<p><em>Offset 52-55</em>: <code>rbx</code> is checked for zero. If it returns a non-zero number, then finish up this function, which jumps to <code>&lt;+310&gt;</code>, which is right before the function epilogue.
+</p></li>
+</ul>
+
+<p>If this check at offset <code>55</code> fails (i.e. if <code>rbx</code> is 0), execution will continue on to the next assembly instruction, <code>&lt;+61&gt;</code>.
+</p>
+<p>The logic between offsets <code>0-55</code> is responsible for returning an Objective-C’s class back to you as a <code>char*</code> if (and only if) that class has been properly loaded. This typically happens when <i>at least</i> one method from that class (i.e., that method must be implemented or overriden in that class) is executed.
+</p>
+<p>For example, if a brand new class is called that hasn’t created any initializations during the lifetime of your process, the logic between offsets <code>0-55</code> will return <code>nil</code>. You’ll build a <em>command regex</em> to confirm this in a second...
+</p>
+<p>Looking at the assembly, you can deduce the following.
+</p>
+<p>If you have an already-initialized class at instance X, and if you offset X by 0x20 and dereference this, the output would look like:
+</p><pre class="code-block">*(uint64_t *)(<span class="hljs-type">X</span> + <span class="hljs-number">0x20</span>)</pre>
+<p>You then bitwise AND this value with <code>0x7ffffffffff8</code>:
+</p><pre class="code-block">*(uint64_t *)(<span class="hljs-type">X</span> + <span class="hljs-number">0x20</span>) &amp; <span class="hljs-number">0x7ffffffffff8</span></pre>
+<p>Next, take this value, offset it by 0x38 and dereference that:
+</p><pre class="code-block">*(uint64_t *)((*(uint64_t *)(<span class="hljs-type">X</span> + <span class="hljs-number">0x20</span>) &amp; <span class="hljs-number">0x7ffffffffff8</span>) + <span class="hljs-number">0x38</span>)</pre>
+<p>This is the final address, so you just need to cast it into the correct type, a <code>char *</code>:
+</p><pre class="code-block">(char *)*(uint64_t *)((*(uint64_t *)(<span class="hljs-type">X</span> + <span class="hljs-number">0x20</span>) &amp; <span class="hljs-number">0x7ffffffffff8</span>) + <span class="hljs-number">0x38</span>)</pre>
+<p>Now, if you have a reference to an <code>NSObject</code>, you know from Chapter 21, “Script Bridging with SBValue &amp; Language Contexts” that the memory address right at the start of the object will point to the class itself (the <code>isa</code> pointer). If you don’t understand that, go back and reread Chapter 21 — or else the remainder of this chapter will get pretty intense. :]
+</p>
+<p>Putting it all together, to get an instance’s class name as a <code>char*</code>, behold this monstrosity:
+</p><pre class="code-block">(char *)*(uint64_t *)((*(uint64_t *)((*(uint64_t *)<span class="hljs-type">Instance_of_X</span>) + <span class="hljs-number">0x20</span>) &amp; <span class="hljs-number">0x7ffffffffff8</span>) + <span class="hljs-number">0x38</span>)</pre>
+<p>Yep, you get to manually replicate this in LLDB to make sure this works!
+</p>
+<div class="note">
+<p><em>Note</em>: I’ll repeat this once more: this will NOT work for Objective-C classes that haven’t been initialized yet. There’s a reason why you’re using a <code>UIView</code>, because if you can see the UI on your screen, then the <code>UIView</code> class has definitely been initialized and at least one <code>UIView</code> has been created.
+</p></div>
+
+<p>In LLDB, go after the <code>UIView</code> class:
+</p><pre class="code-block">(lldb) p/x [UIView class]
+(Class) $1 = 0x000000010c09ce60 UIView</pre>
+<p>You’ll get a different address. Copy that to your clipboard.
+</p>
+<p>Take that address and offset it by <code>0x20</code> and view the memory at that location:
+</p><pre class="code-block">(lldb) x/gx &apos;0x000000010c09ce60 + 0x20&apos;</pre>
+<p>You’ll get some value:
+</p><pre class="code-block">0x10c09ce80: 0x0000608000064b80</pre>
+<p><code>AND</code> that value with 0x7ffffffffff8 (that’s 10 f’s):
+</p><pre class="code-block">(lldb) p/x 0x7ffffffffff8 &amp; 0x0000608000064b80</pre>
+<p>You’ll get another number:
+</p><pre class="code-block">0x0000608000064b80</pre>
+<p>Take that value, offset it by <code>0x38</code> and dereference it.
+</p><pre class="code-block">(lldb) x/gx &apos;0x0000608000064b80 + 0x38&apos;</pre>
+<p>You’ll get something like:
+</p><pre class="code-block">0x608000064bb8: 0x000000010bce319f</pre>
+<p>See if the value at <code>0x000000010bce319f</code> (or at least for me) contains the <code>char*</code> pointer.
+</p><pre class="code-block">(lldb) po (char *)0x000000010bce319f</pre>
+<p>If everything went well, you’ll get your <code>char*</code> representation for <code>UIView</code>.
+</p><div class="image-85"><img src="graphics/img171.png"  alt="" title="" /></div>
+<p>Yay! Pointers!
+</p>
+<p>Create a new <em>regex command</em> to verify everything I’ve told you is true.
+</p>
+<p>Just enter this into the console; no need to put this in your <code>~/.lldbinit</code> file:
+</p><pre class="code-block">command regex getcls &apos;s/(.+)/expression -lobjc -O -- (char *)*(uint64_t *)((*(uint64_t *)((*(uint64_t *)%1) + 0x20) &amp; 0x7ffffffffff8) + 0x38)/&apos;</pre>
+<p>This grabs the <code>char*</code> class name from any instance whose class has already been loaded into your process.
+</p>
+<p>Once you’ve entered this into your LLDB console, give it a go on the known-to-work <code>UIView</code>:
+</p><pre class="code-block">(lldb) getcls [UIView new]</pre>
+<p>Now go after something that hasn’t been initialized or has had any methods executed for that class, like <code><em>UIAlertController</em></code>:
+</p><pre class="code-block">(lldb) getcls [UIAlertController new]</pre>
+<p>You’ll get <code>nil</code>, since this class hasn’t executed any code yet that’s unique for the class.
+</p><pre class="code-block">(lldb) po [UIAlertController class]</pre>
+<p>Re-execute the <code>getcls</code> command:
+</p><pre class="code-block">(lldb) getcls [UIAlertController new]</pre>
+<p>You’ll now get a reference to the <code>char*</code> representation of <code>UIAlertController</code>. Remember if any unique method for that class is executed, the Objective-C runtime loads that class in.
+</p>
+<p>Now, the <code>class</code> (i.e. <code>-[NSObject class]</code>) method is not unique for <code>UIAlertController</code>, but guess what is?
+</p>
+<p>You’re <code>po</code>’ing this object and the <code>debugDescription</code> and <code>description</code> methods are unique (overridden) to this class.
+</p>
+<p>Therefore, just by <code>po</code>’ing a <code>UIAlertController</code> class, it’ll load it into the runtime!
+</p>
+<p>Run your custom command, <code>methods</code>, that you created in Chapter 14, “Dynamic Frameworks” on <code>UIAlertController</code> to verify if you have any doubts.
+</p>
+<h2 class="segment-chapter">Scary assembly, part II</h2>
+
+<p>It’s time to revisit the second part of interest in the <code>objc_class::demangledName(bool)</code> C++ function. This assembly chunk will focus on what the logic does if the initial location for that <code>char*</code> is not in the initial location of interest — that is, if the class isn’t loaded yet.
+</p>
+<p>You need to create a breakpoint on assembly instruction offset 61, the instruction immediately following the instruction on offset 55.
+</p>
+<p>You could blindly call classes to see what classes aren’t loaded in the runtime, but I haven’t a clue what’s in your process, and you have no clue what’s in mine!
+</p>
+<p>Instead, create a symbolic breakpoint that stops on offset 61 of <code>objc_class::demangledName(bool)</code>.
+</p>
+<p>Create a symbolic breakpoint in Xcode using the following details:
+</p>
+<ul>
+<li>
+<p>Use <code><em>dlopen</em></code> for the symbol.
+</p></li>
+
+<li>
+<p>In action 1: remove this breakpoint using <code><em>br dis 1</em></code>.
+</p></li>
+
+<li>
+<p>In action 2: set a breakpoint on offset 61 of <code><em>objc_class::demangledName(bool)</em></code> with this command:
+</p><pre class="code-block">br <span class="hljs-keyword">set</span> -<span class="hljs-type">M</span> objc_class::demangledName(bool) -<span class="hljs-type">R</span> <span class="hljs-number">61</span></pre></li>
+
+<li>
+<p>Select &quot;Automatically continue after evaluating actions&quot;.
+</p></li>
+</ul>
+<div class="image-75"><img src="graphics/img172.png"  alt="" title="" /></div>
+<p>Rebuild and run the <em>VCTransitions</em> application.
+</p>
+<p>You won’t get very far into your program before this breakpoint is hit; you can see <code>dyld</code> is still busy setting stuff up.
+</p>
+<p>Round two; here we go:
+</p><div class="image-95"><img src="graphics/img173.png"  alt="" title="" /></div>
+<ul>
+<li>
+<p><em>Offset 61</em>: Provided the initial location in memory was <code>nil</code>, control continues to 61 where <code>rax + 0x8</code> is dereferenced and stored into <code>rax</code> again.
+</p></li>
+
+<li>
+<p><em>Offset 65</em>: The value 0x18 is added to <code>rax</code> and stored back into <code>rax</code>. <code>rax</code> could be a struct that is holding a value of interest, which could explain offsetting this address.
+</p></li>
+</ul>
+
+<ul>
+<li>
+<p><em>Offset 69</em>: The value at <code>rax</code> is dereferenced and stored into <code>rbx</code>, which will get passed into <code>rdi</code> 2 instructions later. After that, a call instruction occurs, which by the disassembly commentary, looks to expect a <code>char const *</code> as the first parameter.
+</p></li>
+</ul>
+
+<p>This is the “interesting” part of this function to you. After that, this function calls the <code><em>copySwiftV1DemangledName</em></code> function and sets up the logic to load the class into the Objective-C runtime.
+</p>
+<p>But for you, this is as far as you need to explore this function.
+</p>
+<p>Feel free to ensure that <code>rdi</code> will always produce a valid <code>char*</code> at offset 77, but again, that will be something you can do on your own time. You’ve still got a DTrace script to write.
+</p>
+<h2 class="segment-chapter">Converting research into code</h2>
+
+<p>You’ve done the necessary research to figure out how to traverse memory to get the character array representation of a class. Time to implement this thing.
+</p>
+<p>Included in the <em>starter</em> script is a skeleton DTrace script named <em>msgsendsnoop.d</em>.
+</p>
+<p>You’ll start with this DTrace script and build out the code for it. Once working and tested, you’ll transfer that code into a LLDB Python script, which will dynamically generate the code you want.
+</p>
+<p>In Terminal <code><em>cd</em></code> into the <em>starter</em> directory. You can drag and drop the directory into Terminal to autocomplete.
+</p>
+<p><code><em>cat</em></code> the contents of this script:
+</p><pre class="code-block">cat ./msgsendsnoop.d</pre>
+<p>Here’s the output from <code>cat</code>:
+</p><pre class="code-block">#!/usr/sbin/dtrace -s
+#pragma <span class="hljs-type">D</span> option quiet  
+
+dtrace:::<span class="hljs-type">BEGIN</span>
+{
+    printf(<span class="hljs-string">"Starting... Hit Ctrl-C to end.\n"</span>);
+}
+
+pid$target::objc_msgSend:entry 
+{
+  this-&gt;selector = copyinstr(arg1);
+  printf(<span class="hljs-string">"0x%016p, +|-[%s %s]\n"</span>, arg0, <span class="hljs-string">"__TODO__"</span>,
+                                         this-&gt;selector);
+}</pre>
+<p>Let’s break this down. This script will stop on the <code><em>objc_msgSend entry probe</em></code> with the appropriate PID passed in (thanks to the pid$target <code>provider</code>). Once hit, the selector’s <code>char*</code> is copied into the kernel and printed.
+</p>
+<p>As an example of what will happen, let’s say a <code>-[UIView initWithFrame:]</code> is about to be called. The following will print out:
+</p><pre class="code-block"><span class="hljs-number">0x00000000deadbeef</span>, +|-[__TODO__ initWithFrame:]</pre>
+<p>Verify this is true by tracing all the <code>objc_msgSend</code> calls in the <em>VCTransitions</em> application:
+</p><pre class="code-block">sudo ./msgsendsnoop.d -p `pgrep VCTransitions`</pre>
+<p>Tap around on some classes. Hopefully this gives you an idea of how frequently this method gets called.
+</p><div class="image-75"><img src="graphics/img174.png"  alt="" title="" /></div>
+<p>It’s time to fix that annoying <code>__TODO__</code> and replace it with the actual name of the class.
+</p>
+<p>Open up <em>msgsendsnoop.d</em> and replace the existing <code>pid$target::objc_msgSend:entry</code> code with the following:
+</p><pre class="code-block">pid$target::objc_msgSend:entry 
+{
+  <span class="hljs-comment">/* 1 */</span>
+  <span class="hljs-keyword">this</span>-&gt;selector = copyinstr(arg1); 
+  <span class="hljs-comment">/* 2 */</span>
+  size = <span class="hljs-keyword">sizeof</span>(uintptr_t);  
+  <span class="hljs-comment">/* 3 */</span>
+  <span class="hljs-keyword">this</span>-&gt;isa = *((uintptr_t *)copyin(arg0, size));
+
+  <span class="hljs-comment">/* 4 */</span>
+  <span class="hljs-keyword">this</span>-&gt;rax = *((uintptr_t *)copyin((<span class="hljs-keyword">this</span>-&gt;isa + <span class="hljs-number">0x20</span>), size)); 
+  <span class="hljs-keyword">this</span>-&gt;rax =  (<span class="hljs-keyword">this</span>-&gt;rax &amp; <span class="hljs-number">0x7ffffffffff8</span>); 
+
+  <span class="hljs-comment">/* 5 */</span>
+  <span class="hljs-keyword">this</span>-&gt;rbx = *((uintptr_t *)copyin((<span class="hljs-keyword">this</span>-&gt;rax + <span class="hljs-number">0x38</span>), size)); 
+  
+  <span class="hljs-keyword">this</span>-&gt;rax = *((uintptr_t *)copyin((<span class="hljs-keyword">this</span>-&gt;rax + <span class="hljs-number">0x8</span>),  size));  
+
+  <span class="hljs-comment">/* 6 */</span>
+  <span class="hljs-keyword">this</span>-&gt;rax = *((uintptr_t *)copyin((<span class="hljs-keyword">this</span>-&gt;rax + <span class="hljs-number">0x18</span>), size));  
+  
+  <span class="hljs-comment">/* 7 */</span>
+  <span class="hljs-keyword">this</span>-&gt;classname = copyinstr(<span class="hljs-keyword">this</span>-&gt;rbx != <span class="hljs-number">0</span> ? 
+                               <span class="hljs-keyword">this</span>-&gt;rbx  : <span class="hljs-keyword">this</span>-&gt;rax);   
+  printf(<span class="hljs-string">"0x%016p +|-[%s %s]\n"</span>, arg0, <span class="hljs-keyword">this</span>-&gt;classname, 
+                                       <span class="hljs-keyword">this</span>-&gt;selector);
+}</pre>
+<div class="note">
+<p><em>Note</em>: I would recommend you type in each line and make sure it runs, instead of typing in everything at once. Some DTrace script errors can be tricky to hunt down.
+</p></div>
+
+<p>Deep breath. Here’s what each line does:
+</p>
+<ol>
+<li>
+<p><code><em>this-&gt;selector</em></code> does a <code>copyinstr</code>, because you know the second parameter (aka <code>arg1</code>) is an Objective-C selector (aka a C string). Since C <code>char*</code>s end with a null character, DTrace can automatically determine how much data to read.
+</p></li>
+
+<li>
+<p>In a moment, you’re going to <code>copyin</code> some data. However, <code>copyin</code> expects a size, because unlike a string, DTrace doesn’t know when the arbitrary data ends. You declare a variable named <code><em>size</em></code>, which equals the length of a pointer. In x64, this will be 8 bytes.
+</p></li>
+
+<li>
+<p>This is getting the reference to the class of the instance. Remember, the dereferenced pointer at the start address of a Objective-C or Swift instance will point to the class.
+</p></li>
+
+<li>
+<p>Now for the fun part you learned about from the assembly in <code><em>objc_class::demangledName(bool)</em></code>. You’ll replicate the logic found in the registers, as well as even use the same names for the registers! You’re using <code>rax</code> to mimic the logic that this function performs.
+</p></li>
+
+<li>
+<p>This is the logic where <code>(rax + 0x38)</code> gets set to <code>this-&gt;rbx</code>, just like in the actual assembly.
+</p></li>
+
+<li>
+<p>This is the final line if the value <code>this-&gt;rbx</code> is 0 (aka the class has not been loaded yet).
+</p></li>
+
+<li>
+<p>You are using a ternary operator to figure out which clause local variable to use. If <code>this-&gt;rbx</code> is non-null, use it. Otherwise, reference <code>this-&gt;rax</code>.
+</p></li>
+</ol>
+
+<p>Save your work. Jump over to Terminal and relaunch this DTrace script:
+</p><pre class="code-block">sudo ./msgsendsnoop.d -p `pgrep VCTransitions`</pre>
+<p>Woooooooooooooooooot! That crazy hack actually worked!
+</p>
+<p>Scanning the content in your script, it looks like the script is throwing errors occasionally when <code>objc_msgSend</code> is calling a <code>nil</code> object (i.e. <code>RDI</code>, aka <code>arg0</code>, is 0x0).
+</p>
+<p>You can view only the errors with the following command:
+</p><pre class="code-block">sudo ./msgsendsnoop.d -p `pgrep VCTransitions` | grep invalid</pre>
+<p>Let’s fix that now with a simple predicate. Immediately following <code>pid$target::objc_msgSend:entry</code>, add the following predicate so it looks like this:
+</p><pre class="code-block">pid$target::objc_msgSend:entry / arg0 &gt; <span class="hljs-number">0x100000000</span> /</pre>
+<p>This says, “Don’t run this DTrace action if the first param is <code>nil</code> or a section of memory that is not utilized.”
+</p>
+<p>Typically, in a macOS userland process, this section of memory is off-limits for reading, writing, and executing. If anything is below the number <code>0x100000000</code>, DTrace ain’t gonna like it, along with anything else reading memory there.
+</p>
+<p>Therefore, if it’s below that number, just have DTrace skip it. You can of course, confirm this using LLDB with the following command:
+</p><pre class="code-block">(lldb) image dump sections VCTransitions</pre>
+<p>But that’s for you to verify when you’re bored. You still gotta finish this script.
+</p>
+<h3 class="segment-chapter">Removing noise</h3>
+
+<p>To be honest, I couldn’t care less about tracing memory-management code the compiler has generated. This means anything with <code><em>retain</em></code> or <code><em>release</em></code> needs to get outta here.
+</p>
+<p>Make a new clause with the same DTrace probe above your current probe:
+</p><pre class="code-block">pid$target::objc_msgSend:entry 
+{
+  this-&gt;selector = copyinstr(arg1);
+}
+
+/* old code below */
+pid$target::objc_msgSend:entry / arg0 &gt; 0x100000000 /</pre>
+<p>You’re now declaring the selector in a new clause before the main clause with all the memory jumping logic. This will let you filter Objective-C methods inside the predicate section of the main clause.
+</p>
+<p>Speaking of which, augment the predicate in the main clause now:
+</p><pre class="code-block">pid$target::objc_msgSend:entry / arg0 &gt; 0x100000000 / &amp;&amp; 
+                    this-&gt;selector != &quot;retain&quot; &amp;&amp; 
+                    this-&gt;selector != &quot;release&quot; /                              </pre>
+<p>This will now ignore any Objective-C selectors that equal <code>retain</code> or <code>release</code>.
+</p>
+<p>While you’re at it, there’s no need to reassign the <code>this-&gt;selector</code> in the main clause now you’re doing it in the other one. Although it isn’t harmful, it’s superfluous logic. Remove it, or don’t... whatever makes you happy.
+</p>
+<p>Your two clauses should now (hopefully somewhat?) look like this:
+</p><pre class="code-block">pid$target::objc_msgSend:entry 
+{
+  this-&gt;selector = copyinstr(arg1); 
+}
+
+pid$target::objc_msgSend:entry / arg0 &gt; <span class="hljs-number">0x100000000</span> / &amp;&amp; 
+                    this-&gt;selector != <span class="hljs-string">"retain"</span> &amp;&amp; 
+                    this-&gt;selector != <span class="hljs-string">"release"</span> /                              
+{
+  size = <span class="hljs-built_in">sizeof</span>(uintptr_t);  
+  this-&gt;isa = *((uintptr_t *)copyin(arg0, size));
+
+  this-&gt;rax = *((uintptr_t *)copyin((this-&gt;isa + <span class="hljs-number">0x20</span>), size)); 
+  this-&gt;rax =  (this-&gt;rax &amp; <span class="hljs-number">0x7ffffffffff8</span>); 
+  this-&gt;rbx = *((uintptr_t *)copyin((this-&gt;rax + <span class="hljs-number">0x38</span>), size)); 
+  
+  this-&gt;rax = *((uintptr_t *)copyin((this-&gt;rax + <span class="hljs-number">0x8</span>),  size));  
+  this-&gt;rax = *((uintptr_t *)copyin((this-&gt;rax + <span class="hljs-number">0x18</span>), size));  
+  
+  this-&gt;classname = copyinstr(this-&gt;rbx != <span class="hljs-number">0</span> ? 
+                               this-&gt;rbx  : this-&gt;rax);   
+  printf(<span class="hljs-string">"0x%016p +|-[%s %s]\n"</span>, arg0, this-&gt;classname, 
+                                       this-&gt;selector);
+}</pre>
+<p>Relaunch the script:
+</p><pre class="code-block">sudo ./msgsendsnoop.d -p `pgrep VCTransitions`</pre><div class="image-90"><img src="graphics/img175.png"  alt="" title="" /></div>
+<p>Oh man, that’s sooo much better.
+</p>
+<p>But still, that’s too much noise. Time to take this script and combine it with LLDB to only produce output that pertains to code in the main executable.
+</p>
+<h2 class="segment-chapter">Limiting scope with LLDB</h2>
+
+<p>Included within the <em>starter</em> folder is a LLDB Python script that creates a DTrace script and runs it with the <i>exact</i> logic you’ve just implemented.
+</p>
+<p>Womp womp... spoiler alert. You could have just used that script in the first place. But that wouldn’t have been as much fun.
+</p>
+<p>This file is named <em>snoopie.py</em>. Take this file and copy it into your <code>~/lldb</code> directory. If you’ve followed along with Chapter 22, “SB Examples, Improved Lookup”, you have a script in there named <code>lldbinit.py</code> that automatically loads all the scripts in the same directory for you.
+</p>
+<p>If you were too cool for school and didn’t do that chapter, you’ll need to add the following line of code into your <code>~/.lldbinit</code> file:
+</p><pre class="code-block">command script <span class="hljs-keyword">import</span> ~/lldb/snoopie.py</pre>
+<p>You’ll use a creative solution to filter out the code in this DTrace script to only trace Objective-C/dynamic Swift code belonging to the VCTransitions executable. Normally, when snooping code in a framework, I’ll often grab the <code>__TEXT</code> section of a module and compare the instruction pointer to the upper and lower bounds of the <code>__TEXT</code> section that’s loaded in memory (the section in memory responsible for executable code). If the instruction pointer is between the upper and lower bounds, then you can assume you want to use DTrace to trace the code.
+</p>
+<p>Unfortunately, you’re going after <code>objc_msgSend</code>, the chokepoint used for Objective-C code in all modules. This means that you can’t rely on the instruction pointer to tell you which module you’re in.
+</p>
+<p>Instead, you need to go about this by isolating the addresses of a class to only be contained within the <code><em>__DATA</em></code> section of the main executable.
+</p>
+<p>Head on back to your Xcode project, <em>VCTransitions</em>.
+</p>
+<p>Build, run, stop execution and bring up LLDB. Then type the following:
+</p><pre class="code-block">(lldb) p/x (void *)NSClassFromString(@&quot;ObjCViewController&quot;)</pre>
+<p>You’ll get the address to the <code>ObjCViewController</code> class:
+</p><pre class="code-block">(void *) $0 = 0x000000010db34080</pre>
+<p>Take this address and determine what section of memory this thing is located in.
+</p><pre class="code-block">(lldb) image lookup -a 0x000000010db34080</pre>
+<p>You’ll get something similar to the following:
+</p><pre class="code-block">Address: VCTransitions[0x0000000100012080] (VCTransitions.__DATA.__objc_data + 40)
+Summary: (void *)0x000000010db34058</pre>
+<p>Therefore, you can deduce this class is within the <em>VCTransitions</em> <code><em>__DATA</em></code> section inside the <code><em>__objc_data</em></code> segment. You’ll use the LLDB Python module to find the upper and lower bounds of this <code>__DATA</code> section.
+</p>
+<p>Now you’re going to use the good old <code>script</code> command to find how you can create this code through the LLDB module. Back in LLDB, type the following:
+</p><pre class="code-block">(lldb) script path = lldb.target.executable.fullpath</pre>
+<p>This will give you the <code><em>SBFileSpec</em></code> representing the executable, <em>VCTransitions</em>, and assign it to the variable <code><em>path</em></code>. Print out the path to make sure it’s valid:
+</p><pre class="code-block">(lldb) script path</pre>
+<p>You’ll get the full path to the location of this executable. You can use this <code>path</code> variable to get the correct <code><em>SBModule</em></code> from the <code><em>SBTarget</em></code>. Type the following into LLDB:
+</p><pre class="code-block">(lldb) script print lldb.target.module[path]</pre>
+<p>You’ll get the <code>SBModule</code> representing the main executable.
+</p>
+<p>Within a <code>SBModule</code>, there’s <em>SBSection</em>s. You can get all sections within an <code>SBModule</code> using the <em>sections</em> property, or you can get a specific section using <em>section</em><em>[</em><em>index</em><em>]</em>. Yep, that property conforms to Python’s <code>__getitem__</code>. Type the following into LLDB:
+</p><pre class="code-block">(lldb) script print lldb.target.module[path].section[0]</pre>
+<p>You’ll get something like:
+</p><pre class="code-block">[<span class="hljs-number">0x0000000000000000</span>-<span class="hljs-number">0x0000000100000000</span>) <span class="hljs-type">VCTransitions</span>.__PAGEZERO</pre>
+<p>The implementation of <code>__getitem__</code> can also let <code>SBSection</code> act as a dictionary. So you can also access the <code>__PAGEZERO</code> section like so:
+</p><pre class="code-block">(lldb) script print lldb.target.module[path].section[&apos;__PAGEZERO&apos;]</pre>
+<p>This means you can easily access the <code>__DATA</code> <code>SBSection</code> by using the following:
+</p><pre class="code-block">(lldb) script print lldb.target.module[path].section[&apos;__DATA&apos;]</pre>
+<p>Cool, that works. Assign this <code>SBSection</code> to a variable named <code><em>section</em></code>, like so:
+</p><pre class="code-block">(lldb) script section = lldb.target.module[path].section[&apos;__DATA&apos;]</pre>
+<p>You now have a reference to the correct section. There are segments in the __DATA section you can dissect, but you might as well grab the whole section, since it’s one contiguous region in memory.
+</p>
+<p>Get the <code><em>load address</em></code> for the section, like so:
+</p><pre class="code-block">(lldb) script section.GetLoadAddress(lldb.target)</pre>
+<p>This will print the start location. Grab the size as well, while you’re at it:
+</p><pre class="code-block">(lldb) script section.size</pre><div class="image-90"><img src="graphics/img176.png"  alt="" title="" /></div>
+<p>So what does this give you? You can make a DTrace predicate that checks if the class is in between these values in memory. If they are, execute the DTrace action. If they’re not, ignore.
+</p>
+<p>Let’s implement this!
+</p>
+<h2 class="segment-chapter">Fixing up the snoopie script</h2>
+
+<p>As indicated, this <em>snoopie.py</em> script works as-is, so you’re just going to add some small logic to the predicate to filter only instances.
+</p>
+<p>Open up <em>~/lldb/snoopie.py</em> and navigate to the <code><em>generateDTraceScript</em></code> function. Remove the <code>dataSectionFilter = ...</code> line.
+</p>
+<p>Then add the following code in its place:
+</p><pre class="code-block">target = debugger.GetSelectedTarget()
+path = target.executable.fullpath
+section = target.module[path].section[<span class="hljs-string">'__DATA'</span>]
+start_address = section.GetLoadAddress(target)
+end_address = start_address + section.size
+
+dataSectionFilter = <span class="hljs-string">'''{} &lt;= *((uintptr_t *)copyin(arg0, 
+    sizeof(uintptr_t))) &amp;&amp; 
+   *((uintptr_t *)copyin(arg0, sizeof(uintptr_t))) &lt;= {}
+'''</span>.format(start_address, end_address)</pre>
+<p>The interesting point here is you’re taking the <code>arg0</code> and dereferencing it if (and only if) <code>arg0</code> is greater than <code>0x100000000</code>, which indicates a valid instance in memory.
+</p>
+<p>That’s it! No more code! You’re all done!
+</p>
+<p>Save your work, jump over to the LLDB console, reload the contents in LLDB either through your custom <code>reload_script</code> command or manually by command <code>script import ~/.lldbinit</code>.
+</p>
+<p>Once reloaded, try this thing out. In LLDB:
+</p><pre class="code-block">(lldb) snoopie</pre>
+<p>Paste the contents to a Terminal window and have fun.
+</p>
+<p>DTrace now only profiles code that’s in your main (stripped) executable.
+</p><div class="image-100"><img src="graphics/img177.png"  alt="" title="" /></div>
+<p>Have fun with this script on some other apps on your computer!
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>You’ve got some homework to do on your end. This script will not play nicely with Objective-C categories. For example, there could be a class that’s implemented within a different module, which has an Objective-C category implemented within the main executable. You’ll need to figure out some creative way to check if the Objective-C selector in <code>objc_msgSend</code> was implemented within the main executable or not.
+</p>
+<p>In addition, the <code>printf</code> in your current code doesn’t indicate whether <code>arg0</code> is a class method or not. You’ll need to figure out how to determine if the <code>arg0</code> parameter is a class or an instance solely by jumping through memory.
+</p>
+<p>How can you go about finding this?
+</p>
+<ul>
+<li>
+<p>If <code>arg0</code> is an instance of a class, the <code>isa</code> param will point to a non-meta class.
+</p></li>
+
+<li>
+<p>If <code>arg0</code> is the class, then the <code>isa</code> param will point to the meta class.
+</p></li>
+
+<li>
+<p>Explore the assembly of <code><em>class_isMetaClass</em></code> to determine what values inside a <code>Class</code> indicate if it’s a meta class or not.
+</p></li>
+</ul>
+
+<p>Once you’ve found how to jump through memory to determine if a class is a meta class or not, replicate the logic found in <code><em>class_isMetaClass</em></code> in your DTrace script.
+</p>
+<p>Since this is either an instance of a class or the <code>Class</code> object itself, you can use a <em>ternary</em> operator inside your DTrace script with something similar to the following:
+</p><pre class="code-block"><span class="hljs-keyword">this</span>-&gt;isMeta = ... <span class="hljs-comment">// logic here</span>
+<span class="hljs-keyword">this</span>-&gt;isMetaChar = <span class="hljs-keyword">this</span>-&gt;isMeta ? <span class="hljs-string">'+'</span> : <span class="hljs-string">'-'</span>
+
+printf(<span class="hljs-string">"0x%016p %c[%s %s]\n"</span>, arg0, <span class="hljs-keyword">this</span>-&gt;isMetaChar, 
+                                    <span class="hljs-keyword">this</span>-&gt;classname, 
+                                    <span class="hljs-keyword">this</span>-&gt;selector);</pre>
+<p>Heh... <code>isMetaChar</code>. That will totally be a Pokémon name some day.
+</p>
+<p>Good luck!
+</p></body></html>

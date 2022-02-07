@@ -1,0 +1,466 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 25: Hello, DTrace</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 25: Hello, Dtrace</h1>
+
+<p>Omagerd! It’s <em>DTrace</em> time! DTrace is one of the coolest tools you’ve (likely?) never heard about. With DTrace, you can hook into a function or a group of functions using what’s called a <em>probe</em>. From there, you can perform custom actions to query information out of a specific process, or even system wide on your computer (and monitor multiple users)!
+</p>
+<p>If you’ve ever used the Instruments application it might surprise you that a lot of the power underneath it is powered by DTrace.
+</p>
+<p>In this chapter, you’ll explore a very small section of what DTrace is capable of doing by tracing Objective-C code in already compiled applications. Using DTrace to observe iOS frameworks (like UIKit) can give you an incredible insight into how the authors designed their code.
+</p>
+<h2 class="segment-chapter">The bad news</h2>
+
+<p>Let’s get the bad news out of the way first, because after that it’s all exciting and cool things from there. There are several things you need to know about DTrace:
+</p>
+<ul>
+<li>
+<p><em>You need to disable Rootless for DTrace to work</em>. Do you remember decades ago in Chapter 1 where I mentioned you need to disable Rootless for certain functionality to work? In addition to letting LLDB attach to any process on your macOS, DTrace will not correctly function if <em>System Integrity Protection</em> is enabled. If you skipped Chapter 1, go back and disable Rootless now. Otherwise, you’ll need to sit on the sidelines for the remainder of this section.
+</p></li>
+
+<li>
+<p><em>DTrace is not implemented for iOS devices</em>. Although the Instruments application uses DTrace under the hood for a fair amount of things, it can not run custom DTrace scripts on your iOS device. This means you can only run a limited set of predefined functionality on your iOS device. However, you can still run whatever DTrace scripts you want on the Simulator (or any other application on your macOS) irregardless if you’re the owner of the code or not.
+</p></li>
+
+<li>
+<p><em>DTrace has a steep learning curve</em>. DTrace expects you know what you’re doing and what you’re querying. The documentation assumes you know the underlying terminology for the DTrace components. You’ll learn about the fundamental concepts in this chapter but there is quite literally a whole book on this topic which explores the many aspects of DTrace that are out of the scope of what I’ll teach you.
+</p></li>
+</ul>
+
+<p>In fact, it’s worth noting right up front, if DTrace interests you, get this book <a href="http://www.brendangregg.com/dtracebook/index.html">http://www.brendangregg.com/dtracebook/index.html</a>. It focuses on a wider range of topics that might not pertain to your Apple debugging/reverse engineering strategies, but it does teach you how to use DTrace.
+</p>
+<p>Now that I’ve got that off my chest with the bad stuff, it’s time to have some fun.
+</p>
+<h2 class="segment-chapter">Jumping right in</h2>
+
+<p>I am not going to start you off with boring terminology. Ain’t nobody got time for that. Instead, you’ll first get your hands dirty, then figure out what you’re doing later.
+</p>
+<p>Launch the <em>iPhone X Simulator</em>. Once alive, create a new <em>Terminal</em> window. Type the following into Terminal:
+</p><pre class="code-block">sudo dtrace -n <span class="hljs-string">'objc$target:*ViewController::entry'</span> -p `pgrep SpringBoard`</pre>
+<p>No, this will not secretly destroy your computer, you need that <code>sudo</code> in there because DTrace is incredibly powerful and can query information about other users on your computer. This means you need to be <code>root</code> to use it.
+</p>
+<p>This DTrace command takes in two options, the <em>name</em> option (<em>-</em><em>n</em>) and the PID (<em>-</em><em>p</em>), both of which will be discussed later. Make sure to surround your query in single quotes or else it will not work. Take note of the backtics instead of single quotes that surround <code>pgrep SpringBoard</code>.
+</p>
+<p>If you typed out everything correctly, you’ll get output in the Terminal window similar to the following:
+</p><pre class="code-block">dtrace: description &apos;objc$target:*ViewController::entry&apos; matched 31245 probes</pre>
+<p>Navigate around the simulator while keeping an eye on the Terminal window.
+</p>
+<p>This will dump out every hit (aka <em>probe</em>) that contains the Objective-C class name that ends with &quot;ViewController&quot;. Since you left the <em>function</em> field blank (don’t worry - terminology descriptions are coming in the next section), it matches every single Objective-C method so long as the class name ends with <code>ViewController</code>.
+</p>
+<p>Once you get bored of looking at what pops up, kill the Terminal DTrace script with the <em>Ctrl + C</em> combination.
+</p>
+<p>Back in your Terminal, enter the following:
+</p><pre class="code-block">sudo dtrace -n <span class="hljs-string">'objc$target:UIViewController:-viewWillAppear?:entry { ustack(); }'</span> -p `pgrep SpringBoard`</pre>
+<p>There’s a couple of subtle changes this time:
+</p>
+<ul>
+<li>
+<p>The <code>*ViewController</code> query has been changed to <em>UIViewController</em>.
+</p></li>
+
+<li>
+<p>The query <code>-viewWillAppear?</code> has been added to the <em>function</em> location. Again, you’ll cover terminology later. For now, all you need to know is instead of matching every function for any class that contains the string &quot;ViewController&quot;, this new DTrace script will only match <em>-</em><em>[</em><em>UIViewController viewWillAppear:</em><em>]</em>. The question mark stands for a wildcard character in DTrace, which will resolve to the &apos;:&apos; in the <code>viewWillAppear:</code> method.
+</p></li>
+
+<li>
+<p>Finally, you are adding brackets with a function called <em>ustack()</em>. This logic will be called every time <code>-[UIViewController viewWillAppear:]</code> gets hit. The <code>ustack()</code> is one of DTrace’s built-in functions which dumps the userland stack trace (aka SpringBoard for this case) when this method gets hit.
+</p></li>
+</ul>
+
+<ul>
+<li>
+<p>Keep an eye on that single quote which moved from the end of <code>entry</code> part to the end of the squiggly bracket.
+</p></li>
+</ul>
+
+<p>If you typed in everything correctly, you’ll get:
+</p><pre class="code-block">dtrace: description &apos;objc$target:UIViewController:-viewWillAppear?:entry &apos; matched 1 probe</pre>
+<p>Navigate around SpringBoard. Swipe up, swipe down, tap on the <em>Edit</em> button by scrolling to the far left, whatever you need to do to trigger a <code>UIViewController</code>’s <code>viewWillAppear:</code>.
+</p>
+<p>When <code>UIViewController</code>’s <code>viewWillAppear:</code> gets hit, the stack trace will be printed out in the Terminal.
+</p>
+<p>Take note of some stack traces that don’t have the actual function name, but just a module and address.
+</p><div class="image-90"><img src="graphics/img155.png"  alt="" title="" /></div>
+<p>This is telling us we don’t have debugging information or an indirect symbol table to reference the name of this function.
+</p>
+<p>Once you get bored of exploring the stack trace of all the <code>viewWillAppear:</code>’s in the SpringBoard process, kill the DTrace script again.
+</p>
+<p>Now... Do you remember the whole spiel about <em>objc</em><em>_</em><em>msgSend</em> with registers and how the first parameter will be the instance (or class) of an Objective-C class?
+</p>
+<p>For example, when <code>objc_msgSend</code> executes, the function signature will look like:
+</p><pre class="code-block">objc_msgSend(self_or_class, SEL, ...);</pre>
+<p>You can grab that first parameter (aka the instance of the <code>UIViewController</code>) in DTrace with the <em>arg0</em> parameter. Unfortunately, you can only get the reference to the pointer - you can’t run any Objective-C code, like <code>[arg0 title]</code>.
+</p>
+<p>Add the following line of code right before the <code>ustack()</code> function in your DTrace command:
+</p><pre class="code-block"><span class="hljs-built_in">printf</span>(<span class="hljs-string">"\nUIViewcontroller is: 0x%p\n"</span>, arg0);</pre>
+<p>Your DTrace one-liner will now look like the following:
+</p><pre class="code-block">sudo dtrace -n <span class="hljs-string">'objc$target:UIViewController:-viewWillAppear?:entry { printf("\nUIViewcontroller is: 0x%p\n", arg0); ustack(); }'</span> -p `pgrep SpringBoard`</pre>
+<p>Right before printing out the stack trace, you’re printing the reference to the <code>UIViewController</code> that is calling <em>viewWillAppear:</em>.
+</p>
+<p>If you were to copy the address of this pointer spat out by DTrace and attached LLDB to SpringBoard, you will find that it points to a valid <code>UIViewController</code> (provided it hasn’t been <code>dealloc</code>’d yet).
+</p>
+<div class="note">
+<p><em>Note</em>: It’s easy to get the pointer from <code>arg0</code>, but getting any other information (i.e. the class name) is a tricky process.
+</p>
+<p>You can’t execute any Objective-C/Swift code in the DTrace script that belongs to the userland process (e.g. SpringBoard). All you can do is traverse memory with the references you have.
+</p>
+<p>In the final chapter, you’ll actually get the class name of <code>arg0</code> in an Objective-C call by traversing memory in a stripped binary, devoid of debugging information!
+</p></div>
+
+<p>Let’s do one more DTrace example.
+</p>
+<p>Kill any DTrace scripts and create a script which aggregates all the unique classes that are being executed as you explore SpringBoard:
+</p><pre class="code-block">sudo dtrace -n <span class="hljs-string">'objc$target:::entry { @[probemod] = count() }'</span> -p `pgrep SpringBoard`</pre>
+<p>Navigate around SpringBoard again. You’re not going to get any output yet, but as soon as you terminate this script with <em>Ctrl + C</em>, you’ll get an aggregated list of all the times a method for a particular class was executed. This is called <em>Aggregations</em> and you’ll learn about this later.
+</p><div class="image-90"><img src="graphics/img156.png"  alt="" title="" /></div>
+<p>As you can see from my output, SpringBoard had <em>187075</em> method calls implemented by <code>NSObject</code> that were hit during my run of the above DTrace one-liner.
+</p>
+<p>It’s important to differentiate the fact that these were <i>very</i> likely instances of classes which were subclasses of <code>NSObject</code> calling methods implemented by <code>NSObject</code> (i.e. the subclass of the <code>NSObject</code> didn’t override any of these methods).
+</p>
+<p>For example, calling <code>-[UIViewController class]</code> would count as a hit towards the total methods executed by <code>NSObject</code> because <code>UIViewController</code> doesn’t override the Objective-C method, <code>class</code>, nor does <code>UIViewController</code>’s parent class, <code>UIResponder</code>.
+</p>
+<h2 class="segment-chapter">DTrace Terminology</h2>
+
+<p>Now that you’ve gotten your hands dirty on some quick DTrace one-liners, it’s time to learn about the terminology so you actually know what’s going on in these scripts.
+</p>
+<p>Let’s revisit a DTrace <em>probe</em>. You can think of a probe as a query. These probes are events that DTrace can monitor either in a specific process or globally across across your computer.
+</p>
+<p>Consider the following DTrace one-liner:
+</p><pre class="code-block">dtrace -n <span class="hljs-string">'objc$target:NSObject:-description:entry / arg0 = 0 / { @[probemod] = count(): }'</span> -p `pgrep SpringBoard`</pre>
+<p>I would question the usefulness of this script, as this example will monitor <code>NSObject</code>’s implementation of the <code>description</code> method in the process named <code>SpringBoard</code>. In addition, this says as soon as the <code>description</code> method begins, execute logic to aggregate the amount of times this method is called.
+</p>
+<p>This DTrace one-liner can be further broken down into the following terminology:
+</p><div class="image-100"><img src="graphics/img157.png"  alt="" title="" /></div>
+<ul>
+<li>
+<p><em>Probe Description</em>: Encapsulates a group of items that specify 0 or more probes. This consists of a <em>provider</em>, <em>module</em>, <em>function</em>, and <em>name</em>, each separated by colons. Omitting any of these items between the colons will cause the probe description to include all matches. You can use the * or ? operators for pattern matching. The <em>?</em> operator will act as a wildcard for a single character, while the <code><em>*</em></code> will match anything.
+</p></li>
+
+<li>
+<p><em>Provider</em>: Think of the provider as a grouping of code or common functionality. For this particular chapter, you’ll primarily use the <em>objc</em> provider to trace into Objective-C method calls. The <code>objc</code> provider groups all of the Objective-C code. You’ll explore other providers later.
+</p></li>
+</ul>
+
+<div class="note">
+<p><em>Note</em>: The <em>$</em><em>target</em> keyword is a special keyword which will match whatever PID you supply DTrace. Certain <code>provider</code>s (like <code>objc</code>) expect you to supply this.
+</p>
+<p>Think of $target as a placeholder for the actual PID, which monitors Objective-C in a specific process. If you do reference the <code>$target</code> placeholder, you must specify the target PID through the <code>-p</code> or <code>-c</code> option flags in your DTrace command.
+</p>
+<p>Typically this is done either by <code>-p PID</code> if you knew the exact PID, or more likely <code>-p `pgrep NameOFProcess`</code>. The <code>pgrep</code> Terminal command will look for the PID whose process name is <code>NameOFProcess</code> then return the PID, which then gets applied to the <code>$target</code> variable.
+</p></div>
+
+<ul>
+<li>
+<p><em>Module</em>: In the <code>objc</code> provider, the <em>module</em> section is where you specify the class name you wish to observe. Using the <code>objc</code> provider is a little unique in this sense, because typically the module is used to reference a library in which the code is coming from. In fact, in some providers, there’s no module at all! However, the authors of the <code>objc</code> provider chose to use the module to reference the Objective-C classname. For this particular example, the module is <code>NSObject</code>.
+</p></li>
+
+<li>
+<p><em>Function</em>: The part of the probe description that can specify the function name that you wish to observe. For this particular example, the function is <em>-</em><em>description</em>. The authors of the <code>objc</code> provider used the + or - to determine if the Objective-C function is a class or instance method (as you’d expect!). If you changed the function to <code>+description</code>, it would query for any probes with <code>+[NSObject description]</code> instead.
+</p></li>
+
+<li>
+<p><em>Name</em>: This typically specifies the location of the probe within a function. Typically, there’s the <em>entry</em> and <em>return</em> names which correspond to a function’s entry and exit. In addition, within the <code>objc</code> provider, you can also specify any assembly instruction offset to create a probe at! For this particular example, the name is <code>entry</code>, or the start of the function.
+</p></li>
+
+<li>
+<p><em>Predicate</em>: An optional expression to evaluate if the <code>action</code> is a candidate for execution. Think of the predicate as the condition in a if-statement. The action section will only execute if the predicate evaluates to true. If you omit the predicate section, then the action block will execute every time for a given probe. For this particular example, the predicate is the <code>/ arg0 != 0 /</code>, meaning the content following the predicate will only get evaluated if <code>arg0</code> is not <code>nil</code>.
+</p></li>
+
+<li>
+<p><em>Action</em>: The action to perform if the probe matches the probe description and the predicate evaluates to true. This could be as simple as printing something to the console, or performing more advanced functions. For this example, the action is the <code>@[probemod] = count();</code> code.
+</p></li>
+</ul>
+
+<p>When all of these components are combined, this will form a DTrace <em>clause</em>. This consists of the probe description, the optional predicate and optional action.
+</p>
+<p>Put simply, a DTrace clause is made up as follows:
+</p><pre class="code-block">provider:module:function:name / predicate / { action }</pre>
+<p>DTrace “one-liners” can comprise multiple clauses which can monitor different items with the probe description, check for different conditions in the predicate and execute different logic with different actions.
+</p>
+<p>So, with the example:
+</p><pre class="code-block">dtrace -n &apos;objc$target:NSView:-init*:entry&apos; -p `pgrep -x Xcode`</pre>
+<p>You have a probe description of <code>objc$target:NSView:-init*:entry</code>, which includes <code>NSView</code> as the module, <code>-init*</code> as the function, and <code>entry</code> as the name with no predicate and no action. DTrace produces a default output for tracing (which you can silence with the <em>-</em><em>q</em> option). This default output only displays the <code>function</code> and <code>name</code>.  For example, if you were tracing <code>-[NSObject init]</code> without silencing the default DTrace action, your DTrace output would look like the following:
+</p><pre class="code-block">dtrace: description ’objc<span class="hljs-variable">$target</span>:NSObject:-init:entry’ matched 1 probe
+CPU     ID                    FUNCTION:NAME
+  2 512130                      -init:entry 
+  2 512130                      -init:entry 
+  2 512130                      -init:entry 
+  2 512130                      -init:entry </pre>
+<p>From the output, the <code>-[NSObject init]</code> got hit 4 times while the process was being traced. You can tell DTrace to use a different formatted output by combining the <code>-q</code> option with one of the <code>print</code> functions to display alernative formatting for output.
+</p>
+<p>What does that <em>-</em><em>n</em> argument mean again? The <code>-n</code> argument specifies the DTrace <em>name</em> which can come in the form <code>provider:module:function:name</code>, <code>module:function:name</code> or <code>function:name</code>. In addition, the name option can take an optional probe <code>clause</code>, which is why you surround all your one-liner script content in single quotes to pass to the <code>-n</code> argument.
+</p>
+<p>Got it? No? You’ll repeat the above terminology steps with a useful DTrace option to emphasize what you’ve learned.
+</p>
+<h2 class="segment-chapter">Learning while listing probes</h2>
+
+<p>Included in the DTrace command options is a nice little option, <em>-</em><em>l</em>, which will list all the probes you’ve matched against in your probe description. When you have the <em>-</em><em>l</em> option, DTrace will only list the probes and not execute any actions, regardless of whether you supply them or not.
+</p>
+<p>This makes the <code>-l</code> option a nice tool to learn what will and <i>will not</i> work.
+</p>
+<p>Let’s look at a probe description one more time while building up a DTrace script and systematically limiting its scope. Consider the following, Do NOT execute this:
+</p><pre class="code-block">sudo dtrace -ln ’objc<span class="hljs-variable">$target</span>:::’ -p `pgrep -x Finder`</pre>
+<p>This will create a probe description on every Objective-C every class, method, and assembly instruction within the <em>Finder</em> application. This is a <i>very bad</i> idea for a DTrace script and will likely not run on your computer because of the hit count you’ll get.
+</p>
+<div class="note">
+<p><em>Note</em>: I’ve supplied the <code>-x</code> option to <code>pgrep</code> because I could get multiple PIDs for a <code>pgrep</code> query, which will screw up the placeholder, <code>$target</code>. The <code>-x</code> option says only give me the PID(s) that match <em>exactly</em> for the name, Finder. If there are multiple instances of a process. You can get the oldest one or newest one in <code>pgrep</code> with the <code>-o</code> or <code>-n</code> option. If this sounds confusing, play around with the <code>pgrep</code> command in Terminal without DTrace to understand how it works.
+</p></div>
+
+<p>Don’t execute the above script because it will take too long. However, execute the rest of these scripts so you understand what’s happening.
+</p>
+<p>Let’s filter this down a bit. In Terminal, type the following:
+</p><pre class="code-block">sudo dtrace -ln &apos;objc$target:NSView::&apos; -p `pgrep -x Finder`</pre>
+<p>Press enter, then enter your password.
+</p>
+<p>This will list a probe on every single method implemented by <code>NSView</code> for all of its methods and every assembly instruction within each of those methods. Still a horrible idea, but at least this one will actually print out after a second.
+</p>
+<p>How many probes is this? You can get that answer by piping your output to the <em>wc</em> command:
+</p><pre class="code-block">sudo dtrace -ln &apos;objc$target:NSView::&apos; -p `pgrep -x Finder` | wc -l</pre>
+<p>On my macOS machine in 10.13 (at the time of writing), I get ~45k Objective-C DTrace probes for any code pertaining to <code>NSView</code> within the Finder process. Wow.
+</p>
+<p>Filter the probe description down some more:
+</p><pre class="code-block">sudo dtrace -ln &apos;objc$target:NSView:-initWithFrame?:&apos; -p `pgrep -x Finder`</pre>
+<p>This will filter the probe description down to every assembly instruction that’s executed within <code>-[NSView initWithFrame:]</code> in addition to the <em>entry</em> and <em>return</em> probes. Notice how I had to use a <code>?</code> instead of a colon to specify the Objective-C selector (which takes a parameter). This is because if I used a colon, then DTrace will incorrectly think I am done with the <code>function</code> part and have moved onto specifying the <code>name</code> within the DTrace probe. There’s also the <code>-</code> at the begining of the <code>function</code> description to indicate this is an instance Objective-C method.
+</p>
+<p>This is still too much output, I only want to setup a probe that will monitor the beginning of the <code>-[NSView initWithFrame:]</code> method and no other parts.
+</p><pre class="code-block">sudo dtrace -ln &apos;objc$target:NSView:-initWithFrame?:entry&apos; -p `pgrep -x Finder`</pre>
+<p>This will say to only set a probe to the beginning of <code>-[NSView initWithFrame:]</code> and no other parts in this Objective-C method.
+</p>
+<p>Using the <code>-l</code> option is a nice way to learn the scope of your probes before you shoot off making your DTrace actions. I would recommend you make heavy use of the <code>-l</code> option when you’re starting to learn DTrace.
+</p>
+<h2 class="segment-chapter">A script that makes DTrace scripts</h2>
+
+<p>When working with DTrace, not only do you get to deal with an exceptionally steep learning curve, you also get to deal with some cryptic errors if you get a build time or runtime DTrace error (yeah, it’s on the same level of cryptic as some of those Swift compiler errors).
+</p>
+<p>To help mitigate these build issues as you learn DTrace, I’ve created a lovely little script called <em>tobjectivec.py</em> (trace Objective-C), which is an LLDB Python script that will generate a custom DTrace script for you so long as you ask it real nice like.
+</p>
+<div class="note">
+<p><em>Note</em>: Oh yeah, now is a good time to mention you can create DTrace scripts as well as DTrace one-liners. As the complexity in your DTrace logic rises, it becomes a better idea to use a script. For simple DTrace queries, stick with the one-liners.
+</p></div>
+
+<p>You’ll find the <em>tobjectivec.py</em> script located within the starter directory for this chapter. I am assuming you went through Chapter 22, “SB Examples, Improved Lookup” and have installed the <em>lldbinit.py</em> script and have stuck it in your <code>~/lldb</code> folder. Provided you did this, all you have to do is copy/paste the <code>tobjectivec.py</code> script into your <code>~/lldb</code> directory and it will be launched next time LLDB starts up.
+</p>
+<p>If you haven’t done this yet, go back to Chapter 22 and follow the instructions for installing the <code>lldbinit.py</code> file. Alternatively, if you’re extremely stubborn, I suppose you can install this <code>tobjectivec.py</code> manually by augmenting your <code>~/.lldbinit</code> file.
+</p>
+<h3 class="segment-chapter">Exploring DTrace through tobjectivec.py</h3>
+
+<p>Time to take a whirlwind tour of this script while exploring DTrace on Objective-C code.
+</p>
+<p>Included in the starter folder is the recycled project <em>Allocator</em>. Open that project up, build, run, then pause in the debugger.
+</p>
+<p>Once you’ve got the Allocator project paused, bring up the LLDB console and type the following:
+</p><pre class="code-block">(lldb) tobjectivec -g</pre>
+<p>Typically, the <code>tobjectivec</code> script will generate a script in the <em>/tmp/</em> directory of your computer. However, this <em>-</em><em>g</em> option says that you’re debugging your script and displays the output to LLDB instead of creating a file in <code>/tmp/</code>. With the <code>-g</code> (or <code>--debug</code>) option, your current script will be displayed to the console.
+</p>
+<p>This dry run of the <code>tobjectivec.py</code> with no extra parameters will produce the following output:
+</p><pre class="code-block">#!/usr/sbin/dtrace -s  /* 1 */
+
+#pragma D option quiet  /* 2 */
+
+dtrace:::BEGIN { printf(&quot;Starting... use Ctrl + c to stop\n&quot;); } /* 3 */
+dtrace:::END   { printf(&quot;Ending...\n&quot;  ); }                      /* 4 */
+
+/* Script content below */
+
+objc$target:::entry /* 5 */
+{
+    printf(&quot;0x%016p %c[%s %s]\n&quot;, arg0, probefunc[0], probemod, (string)&amp;probefunc[1]); /* 6 */
+}</pre>
+<p>Let’s break this down:
+</p>
+<ol>
+<li>
+<p>When executing a DTrace script, the first line needs to be <em>#</em><em>!</em><em>/usr/sbin/dtrace -s</em> or else the script might not run properly.
+</p></li>
+
+<li>
+<p>This line says to not list the probe count nor perform the default DTrace action when a probe fires. Instead, you’ll give DTrace your own custom action.
+</p></li>
+
+<li>
+<p>This is one third of the DTrace clauses within this script. There are probes for DTrace that monitor for certain DTrace events... like when a DTrace script is about to start. This says, as soon as DTrace starts, print out the <code>&quot;Starting... use Ctrl + c to stop&quot;</code> string.
+</p></li>
+
+<li>
+<p>Here’s another DTrace clause that prints out <code>&quot;Ending...&quot;</code> as soon as the DTrace script finishes.
+</p></li>
+
+<li>
+<p>This is the DTrace probe description of interest. This says to trace <i>all</i> the Objective-C code found in whatever process ID you supply to this script.
+</p></li>
+
+<li>
+<p>The action part of this clause prints out the instance of the Objective-C probe that was triggered, followed by Objective-C styled output. In here, you can see <em>probefunc</em> and <em>probemod</em> being utilized which will be a <code>char*</code> representation of the function and module. DTrace has several builtin variables that you can use, <code>probefunc</code> &amp; <code>probemod</code> being two of them. You also have <em>probeprov</em> and <em>probename</em> at your disposal. Remember the module will represent the class name while the function will represent the Objective-C method. This takes a combination of the <code>probemod</code> &amp; <code>probefunc</code> and displays it in the pretty Objective-C syntax you’re accustomed to.
+</p></li>
+</ol>
+
+<p>Now you’ve got an idea of this script, remove the <code>-g</code> option so you’re no longer using the debug option. Type in LLDB:
+</p><pre class="code-block">(lldb) tobjectivec</pre>
+<p>You’ll get different output this time:
+</p><pre class="code-block">Copied script to clipboard... paste in Terminal</pre>
+<p>Your clipboard’s contents have been modified. Jump over to your Terminal, then paste in the contents of your clipboard. Here’s mine, but yours will of course be different:
+</p><pre class="code-block">sudo /tmp/lldb_dtrace_profile_objc.d  -p 95129  2&gt;/dev/null</pre>
+<p>The content you originally saw is now dumped into <em>/tmp/lldb</em><em>_</em><em>dtrace</em><em>_</em><em>profile</em><em>_</em><em>objc.d</em>. If you are at all paranoid about what this script does, I recommend you <code>cat</code> it first to ensure you know what it’s doing.
+</p>
+<p>The script provides the process identifier that LLDB is attached to (so you wouldn’t have to type <code>pgrep Allocator</code>).
+</p>
+<p>Once you get your password prompt, enter in you password to get those root privs:
+</p><pre class="code-block">$ sudo /tmp/lldb_dtrace_profile_objc.d  -p <span class="hljs-number">95129</span>  <span class="hljs-number">2</span>&gt;/dev/null
+<span class="hljs-type">Password</span>:
+<span class="hljs-type">Starting</span>... use <span class="hljs-type">Ctrl</span> + <span class="hljs-built_in">c</span> to stop</pre>
+<p>Wait until the DTrace script inidicates to you that it’s starting.
+</p>
+<p>With both Xcode and Terminal visible, type a simple <code>po [NSObject class]</code> in the console. Check out the slew of Objective-C messages that get spat out for just this method.
+</p><div class="image-95"><img src="graphics/img158.png"  alt="" title="" /></div>
+<p>This will prepare you for what’s about to come. Resume execution using LLDB, like so:
+</p><pre class="code-block">(lldb) continue</pre>
+<p>Navigate around the Allocator app (tap on views, bring down the in-call status bar in the Simulator with <em>⌘ + Y</em>) iOS Simulator while keeping an eye on the DTrace Terminal window.
+</p>
+<p>Scary, right?
+</p>
+<p>This is too much stuff. Let’s filter some of the noise by adding content to the module specifier.
+</p>
+<p>Back in Xcode, pause execution of the Allocator process and bring up LLDB.
+</p>
+<p>Generate a new script that only focuses on Objective-C classes that have the phrase <code>StatusBar</code> in it’s name. Type the following in LLDB:
+</p><pre class="code-block">(lldb) tobjectivec -m *StatusBar* -g</pre>
+<p>This will do a dry run and give you the following truncated output:
+</p><pre class="code-block">objc$target:*StatusBar*::entry 
+{
+    printf(&quot;0x%016p %c[%s %s]\n&quot;, arg0, probefunc[0], probemod, (string)&amp;probefunc[1]);
+}</pre>
+<p>Notice how the module portion of the probe has changed. The <code>*</code> can be thought of as <code>.*</code> that you know and love in your regular expressions. This means you’re querying for probes that contain the case sensitive word <code>StatusBar</code> for any Objective-C classes when the probe enters the start of the function.
+</p>
+<p>In LLDB, remove the <code>-g</code> option so this script will get copied to your clipboard, then re-execute the command.
+</p><pre class="code-block">(lldb) tobjectivec -m *StatusBar* </pre>
+<p>Jump over to your Terminal window. Kill the previous DTrace instance by pressing <em>Ctrl + C</em>, then paste in your new script.
+</p><pre class="code-block"> sudo /tmp/lldb_dtrace_profile_objc.d  -p 2646  2&gt;/dev/null</pre>
+<p>Resume execution back in Xcode.
+</p>
+<p>Jump to the Simulator and toggle the in-call status bar using <em>⌘ + Y</em> or rotate the Simulator by using <em>⌘ + ←</em> or <em>⌘ + →</em> while keeping an eye on the DTrace Terminal window.
+</p>
+<p>You’ll get a slew of output again.
+</p>
+<p>You can use DTrace to cast a wide net on code with minimal performance hits and quickly drill down when you need to.
+</p>
+<h3 class="segment-chapter">Tracing debugging commands</h3>
+
+<p>I often find it insightful to know what’s happening behind the scenes when I’m executing simple debugging commands and the code that’s going on behind them to make it work for me.
+</p>
+<p>Observe how many Objective-C method calls it takes to make a simple Objective-C <code>NSString</code>.
+</p>
+<p>Back in LLDB, type the following:
+</p><pre class="code-block">(lldb) tobjectivec</pre>
+<p>Paste the contents in the Terminal window, but do not resume execution in LLDB. Instead, just type the following:
+</p><pre class="code-block">(lldb) po @&quot;hi this is a long string to avoid tagged pointers&quot;</pre>
+<p>As soon as you press enter, check out the DTrace Terminal window and see what gets spat out. You’ll get something similar to the following:
+</p><div class="image-70"><img src="graphics/img159.png"  alt="" title="" /></div>
+<p>We just printed out a simple <code>NSString</code> and look how many Objective-C calls this took!
+</p>
+<p>Here’s one for all you Swift “purists” out there.
+</p>
+<p>Clear the Terminal screen using (<em>⌘ + K</em>), make sure the DTrace Terminal script is still running. Head back to LLDB and type the following:
+</p><pre class="code-block">(lldb) expression -l swift -O -- class b { }; b()</pre>
+<p>You are using the Swift debugging context to create a pure Swift class then instantiating it. Observe the Objective-C method calls when this class is created.
+</p>
+<p>DTrace will dump out:
+</p><pre class="code-block"><span class="hljs-number">0x00000001087541b8</span> +[<span class="hljs-type">SwiftObject</span> <span class="hljs-class"><span class="hljs-keyword">class</span>]
+0<span class="hljs-title">x0000000119149778</span> +[<span class="hljs-title">SwiftObject</span> <span class="hljs-title">initialize</span>]
+0<span class="hljs-title">x0000000119149778</span> +[<span class="hljs-title">SwiftObject</span> <span class="hljs-title">class</span>]</span></pre>
+<p>If you were to copy any of the addresses down spat out by DTrace and then <code>po</code> that, you’d be greeted with an onslaught of Objective-C method calls for this pure Swift class.
+</p>
+<p>A &quot;pure&quot; Swift class ain’t as pure as you thought, right?
+</p>
+<h3 class="segment-chapter">Tracing an object</h3>
+
+<p>You can use DTrace to easily trace method calls for a particular reference.
+</p>
+<p>Remove the previous DTrace script with <em>Ctrl + C</em>.
+</p>
+<p>While the application is paused, use LLDB to get the reference to the <code>UIApplication</code>. Make sure you are in an Objective-C stack frame.
+</p><pre class="code-block">(lldb) po UIApp</pre>
+<p>You’ll get something like:
+</p><pre class="code-block">&lt;<span class="hljs-type">UIApplication</span>: <span class="hljs-number">0x7fa774600f90</span>&gt;</pre>
+<p>Copy the reference and use this to build a predicate which only stops when this reference is arg0 — remember, <code>objc_msgSend</code>’s param is a instance of a Class or the Class itself.
+</p><pre class="code-block">(lldb) tobjectivec -g -p &apos;arg0 == 0x7fa774600f90&apos;</pre>
+<p>You’ll get the dry run output of your script printed to the console similar to the following:
+</p><pre class="code-block">#!/usr/sbin/dtrace -s
+
+#pragma <span class="hljs-type">D</span> option quiet
+dtrace:::<span class="hljs-type">BEGIN</span> { printf(<span class="hljs-string">"Starting... use Ctrl + c to stop\n"</span>); }
+dtrace:::<span class="hljs-type">END</span>   { printf(<span class="hljs-string">"Ending...\n"</span>  ); }
+
+<span class="hljs-comment">/* Script content below */</span>
+
+objc$target:::entry / arg0 == <span class="hljs-number">0x7fa774600f90</span> /
+{
+    printf(<span class="hljs-string">"0x%016p %c[%s %s]\n"</span>, arg0, probefunc[<span class="hljs-number">0</span>], probemod, (string)&amp;probefunc[<span class="hljs-number">1</span>]);
+}</pre>
+<p>Looks good! Execute the command again without the <code>-g</code> option:
+</p><pre class="code-block">(lldb) tobjectivec -p &apos;arg0 == 0x7fa774600f90&apos;</pre>
+<p>Resume execution in LLDB, then paste your script into Terminal.
+</p>
+<p>Trigger the home button, (<em>⌘ + Shift + H</em>) or the status bar (<em>⌘ + Y</em>) in the Simulator.
+</p>
+<p>This is dumping every Objective-C method call on the <code>[UIApplication sharedApplication]</code> instance.
+</p>
+<p>Oh, is that too much output to look at? Then aggregate the content!
+</p>
+<p>Back in Xcode, pause execution and in LLDB:
+</p><pre class="code-block">(lldb) tobjectivec -g -p &apos;arg0 == 0x7fa774600f90&apos; -a &apos;@[probefunc] = count()&apos;</pre>
+<p>This will produce the following script:
+</p><pre class="code-block">#!/usr/sbin/dtrace -s
+
+#pragma <span class="hljs-type">D</span> option quiet
+dtrace:::<span class="hljs-type">BEGIN</span> { printf(<span class="hljs-string">"Starting... use Ctrl + c to stop\n"</span>); }
+dtrace:::<span class="hljs-type">END</span>   { printf(<span class="hljs-string">"Ending...\n"</span>  ); }
+
+<span class="hljs-comment">/* Script content below */</span>
+
+objc$target:::entry / arg0 == <span class="hljs-number">0x7fa774600f90</span> /
+{
+    @[probefunc] = <span class="hljs-built_in">count</span>()
+}</pre>
+<p>You know the drill. Rerun the above <code>tobjectivec</code> command without the <code>-g</code> option, then paste your clipboard contents into Terminal and resume execution in LLDB.
+</p>
+<p>No content will be displayed in Terminal yet. But DTrace is quietly aggregating every method that is being sent to the <code>UIApplication</code> instance.
+</p>
+<p>Move around in the Simulator to get a healthy count of methods being sent to the <code>UIApplication</code>. As soon as you kill this script with the usual <em>Ctrl + C</em>, DTrace will dump out the total count of all the Objective-C methods that were applied to the <code>UIApplication</code> instance.
+</p>
+<h3 class="segment-chapter">Other DTrace ideas</h3>
+
+<p>Here’s some other ideas for you to try out on your own time:
+</p>
+<p>Trace all the initialization methods for all objects:
+</p><pre class="code-block">(lldb) tobjectivec -f ?init*</pre>
+<p>Monitor inter-process communication related logic (i.e. Webviews, keyboards, etc):
+</p><pre class="code-block">(lldb) tobjectivec -m NSXPC*</pre>
+<p>Print the <code>UIControl</code> subclass which is handling your starting touch event on your iOS device:
+</p><pre class="code-block">(lldb) tobjectivec -m UIControl -f -touchesBegan?withEvent? </pre>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>This is only the tip of the DTrace iceberg. There’s a <em>lot</em> more that is possible with DTrace.
+</p>
+<p>I would recommend you check out the following URLs as they are a great resource for learning DTrace.
+</p>
+<ul>
+<li>
+<p><a href="https://www.bignerdranch.com/blog/hooked-on-dtrace-part-1/">https://www.bignerdranch.com/blog/hooked-on-dtrace-part-1/</a>
+</p></li>
+
+<li>
+<p><a href="https://www.objc.io/issues/19-debugging/dtrace/">https://www.objc.io/issues/19-debugging/dtrace/</a>
+</p></li>
+</ul>
+
+<p>In the next chapter, you’ll take a deeper dive into whats possible with DTrace and explore profiling Swift code.
+</p></body></html>

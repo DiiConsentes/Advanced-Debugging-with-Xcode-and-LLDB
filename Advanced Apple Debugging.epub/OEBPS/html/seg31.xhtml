@@ -1,0 +1,597 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 21: Script Bridging with SBValue &amp; Memory</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 21: Script Bridging with SBValue &amp; Memory</h1>
+
+<p>So far, when evaluating JIT code (i.e. Objective-C, Swift, C, etc. code that’s executed through your Python script), you’ve used a small set of APIs to evaluate the code.
+</p>
+<p>For example, you’ve used <code>SBDebugger</code> and <code>SBCommandReturnObject</code>’s <code><em>HandleCommand</em></code> method to evaluate code. <code>SBDebugger</code>’s <code>HandleCommand</code> goes straight to <code>stderr</code>, while you have a little more control over where the <code>SBCommandReturnObject</code> result ends up. Once evaluated, you had to manually parse the return output for anything of interest. This manual searching of the output from the JIT code is a bit unsightly. Nobody likes stringly typed things!
+</p>
+<p>So, it’s time to talk about a new class in the lldb Python module, <code><em>SBValue</em></code>, and how it can simplify the parsing of JIT code output.
+</p>
+<p>Open up the Xcode project named <em>Allocator</em> in the <em>starter</em> folder for this chapter. This is a simple application which dynamically generates classes based upon input from a text field.
+</p><div class="image-55"><img src="graphics/img119.png"  alt="" title="" /></div>
+<p>This is accomplished by taking the string from the text field and using it as an input to the <code>NSClassFromString</code> function. If a valid class is returned, it’s initialized using the plain old <code>init</code> method. Otherwise, an error is spat out.
+</p>
+<p>Build and run the application on any iOS 11 Simulator. You’ll make zero modifications to this project, yet you’ll explore objects’ layouts in memory through <code>SBValue</code>, as well as manually with pointers through LLDB.
+</p>
+<h2 class="segment-chapter">A detour down memory layout lane</h2>
+
+<p>To truly appreciate the power of the <code>SBValue</code> class, you’re going to explore the memory layout of three unique objects within the Allocator application. You’ll start with an Objective-C class, then explore a Swift class with no superclass, then finally explore a Swift class that inherits from <code>NSObject</code>.
+</p>
+<p>All three of these classes have three properties with the following order:
+</p>
+<ul>
+<li>
+<p>A <code>UIColor</code> called <code><em>eyeColor</em></code>.
+</p></li>
+
+<li>
+<p>A language specific string (<code>String</code>/<code>NSString</code>) called <code><em>firstName</em></code>.
+</p></li>
+
+<li>
+<p>A language specific string (<code>String</code>/<code>NSString</code>) called <code><em>lastName</em></code>.
+</p></li>
+</ul>
+
+<p>Each instance of these classes is initialized with the same values. They are:
+</p>
+<ul>
+<li>
+<p><code>eyeColor</code> will be <code>UIColor.brown</code> or <code>[UIColor brownColor]</code> depending on language.
+</p></li>
+
+<li>
+<p><code>firstName</code> will be <code>&quot;Derek&quot;</code> or <code>@&quot;Derek&quot;</code> depending on language.
+</p></li>
+
+<li>
+<p><code>lastName</code> will be <code>&quot;Selander&quot;</code> or <code>@&quot;Selander&quot;</code> depending on language.
+</p></li>
+</ul>
+
+<h3 class="segment-chapter">Objective-C memory layout</h3>
+
+<p>You’ll explore the Objective-C class first, as it’s the foundation for how these objects are laid out in memory. Jump over to the <em>DSObjectiveCObject.h</em> and take a look at it. Here it is for your reference:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">@interface</span> <span class="hljs-title">DSObjectiveCObject</span> : <span class="hljs-title">NSObject</span></span>
+
+<span class="hljs-keyword">@property</span> (<span class="hljs-keyword">nonatomic</span>, <span class="hljs-keyword">strong</span>) <span class="hljs-built_in">UIColor</span> *eyeColor;
+<span class="hljs-keyword">@property</span> (<span class="hljs-keyword">nonatomic</span>, <span class="hljs-keyword">strong</span>) <span class="hljs-built_in">NSString</span> *firstName;
+<span class="hljs-keyword">@property</span> (<span class="hljs-keyword">nonatomic</span>, <span class="hljs-keyword">strong</span>) <span class="hljs-built_in">NSString</span> *lastName;
+
+<span class="hljs-keyword">@end</span></pre>
+<p>As mentioned earlier, there are three properties: <code>eyeColor</code>, <code>firstName</code>, and <code>lastName</code> in that order.
+</p>
+<p>Jump over to the implementation file <em>DSObjectiveCObject.m</em> and give it a gander to understand what’s happening when this Objective-C object is initialized:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">@implementation</span> <span class="hljs-title">DSObjectiveCObject</span></span>
+
+- (<span class="hljs-keyword">instancetype</span>)init
+{
+  <span class="hljs-keyword">self</span> = [<span class="hljs-keyword">super</span> init];
+  <span class="hljs-keyword">if</span> (<span class="hljs-keyword">self</span>) {
+    <span class="hljs-keyword">self</span>.eyeColor = [<span class="hljs-built_in">UIColor</span> brownColor];
+    <span class="hljs-keyword">self</span>.firstName = <span class="hljs-string">@"Derek"</span>;
+    <span class="hljs-keyword">self</span>.lastName = <span class="hljs-string">@"Selander"</span>;
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">self</span>;
+}
+<span class="hljs-keyword">@end</span></pre>
+<p>Nothing too crazy. The properties will be initialized to the values just described above.
+</p>
+<p>When this is compiled, this Objective-C class will actually look like a C struct. The compiler will create a struct similar to the following pseudocode:
+</p><pre class="code-block"><span class="hljs-keyword">struct</span> DSObjectiveCObject {
+  Class isa;
+  <span class="hljs-built_in">UIColor</span> *eyeColor;
+  <span class="hljs-built_in">NSString</span> *firstName
+  <span class="hljs-built_in">NSString</span> *lastName
+}</pre>
+<p>Take note of the <code>Class isa</code> variable as the first parameter. This is the magic behind an Objective-C class being considered an Objective-C class. This <code>isa</code> value is always the first value in an object instance’s memory layout, and is a pointer to the class the object is an instance of. After that, the properties are added to this struct in the order they were written in your source code.
+</p>
+<p>Let’s see this in action through LLDB. Perform the following steps:
+</p>
+<ol>
+<li>
+<p>Make sure the <em>DSObjectiveCObject</em> is selected in the <code>UIPickerView</code>.
+</p></li>
+
+<li>
+<p>Tap on the <em>Allocate Class</em> button.
+</p></li>
+
+<li>
+<p>Once the reference address is spat out in the console, copy that address to your clipboard.
+</p></li>
+
+<li>
+<p>Pause execution and bring up the LLDB console window.
+</p></li>
+</ol>
+<div class="image-90"><img src="graphics/img120.png"  alt="" title="" /></div>
+<p>An instance of the <code>DSObjectiveCObject</code> has been created. You’ll now use LLDB to spelunk into offsets of this object’s contents.
+</p>
+<p>Copy the memory address from the console output and make sure <code>po</code>’ing it will give you a valid reference (e.g. you’re not stopped on a Swift stack frame when printing out this address).
+</p>
+<p>For my case, I got the pointer <code>0x600000031f80</code>. As always, yours will be different. Print out the address through LLDB:
+</p><pre class="code-block">(lldb) po 0x600000031f80</pre>
+<p>You should get this expected line of output:
+</p><pre class="code-block">&lt;DSObjectiveCObject: 0x600000031f80&gt;</pre>
+<p>Since this can be treated as a C struct, you’ll start spelunking into offsets of this pointer’s contents.
+</p>
+<p>In the LLDB console, type the following (replacing the pointer with yours):
+</p><pre class="code-block">(lldb) po *(id *)(0x600000031f80)</pre>
+<p>This casts the pointer to a pointer to an <code>id</code> and then dereferences it. This will access the object’s <code><em>isa</em></code> pointer.
+</p>
+<p>You should see this output:
+</p><pre class="code-block">DSObjectiveCObject</pre>
+<p>That’s the class object’s description, as expected.
+</p>
+<p>Let’s look at another way of viewing this memory. Use the <code><em>x</em></code> command (aka <code>examine</code>, a port from GDBs popularity with this command) to jump to the starting pointer, then <code>po</code> it. Enter the following:
+</p><pre class="code-block">(lldb) x/gx 0x600000031f80</pre>
+<p>This command says the following:
+</p>
+<ul>
+<li>
+<p>Examine the memory (<code>x</code>)
+</p></li>
+
+<li>
+<p>Print out the size of a <em>giant</em> word, (64 bits, or 8 bytes) (<code>g</code>)
+</p></li>
+
+<li>
+<p>Finally, format it in hexadecimal (<code>x</code>).
+</p></li>
+</ul>
+
+<p>If, hypothetically, you only wanted to view the first byte at this location in binary instead, you could type <code>x/bt 0x600000031f80</code> instead. This would be interpreted as examine (<code>x</code>), a byte (<code>b</code>) in binary (<code>t</code>). The <code>examine</code> command is definitely one of those nice commands to keep in your toolkit when exploring memory.
+</p>
+<p>You’ll see the following output (or at least, similar output, as the values will be different for you):
+</p><pre class="code-block">0x600000031f80: 0x0000000108b06568</pre>
+<p>This gives you output that tells you the value at memory address <code>0x600000031f80</code> contains <code>0x0000000108b06568</code>. Well, it does for me!
+</p>
+<p>Jumping back to the task at hand, take the address printed out by the <code>x/gx</code> command and print out this new address using <code>po</code>.
+</p><pre class="code-block">(lldb) po 0x0000000108b06568</pre>
+<p>Once again, this will print out the <code>isa</code> class, which is the <code>DSObjectiveCObject</code> class. This is an alternative way to print out the <code>isa</code> instance, which might give more insight into what’s happening. However, that took two LLDB commands instead of one, so you’ll stick to dereferencing the pointer and not use the <code>x/gx</code> command.
+</p>
+<p>Let’s jump a little further into the <code>eyeColor</code> property. In the LLDB console:
+</p><pre class="code-block">(lldb) po *(id *)(0x600000031f80 + 0x8)</pre>
+<p>This says “start at <code>0x600000031f80</code> (or equivalent), go up 8 bytes and get the contents pointed at by this pointer.” You’ll get the following output:
+</p><pre class="code-block">UIExtendedSRGBColorSpace 0.6 0.4 0.2 1</pre>
+<p>How did I get to the number 8? Try this out in LLDB:
+</p><pre class="code-block">(lldb) po sizeof(Class)</pre>
+<p>The <code>isa</code> variable is of type <code>Class</code>. So by knowing how big a <code>Class</code> is, you know how much space that takes up in the struct, and therefore you know the offset of <code>eyeColor</code>.
+</p>
+<div class="note">
+<p><em>Note</em>: When working with 64-bit architectures (x64 or ARM64), all pointers will be 8 bytes. In addition, the <code>Class</code> class itself is 8 bytes. This means in 64-bit architecture, all you need to do to move between different types is jump by 8 bytes!
+</p>
+<p>There are types which are different sizes in bytes, such as <code>int</code>, <code>short</code>, <code>bool</code> and others, and the compiler may pad that memory to fit into a predefined size 8 byte size on 64-bit architectures. However, there’s no need to worry about that for now, since this <code>DSObjectiveCObject</code> class only contains pointers to <code>NSObject</code> subclasses, along with the <code>Class</code> object held in the <code>isa</code> variable.
+</p></div>
+
+<p>Keep on going. Increment the offset by another 8 bytes in LLDB:
+</p><pre class="code-block">(lldb) po *(id *)(0x600000031f80 + 0x10)</pre>
+<p>You’re adding another 8 to get 0x10 in hexadecimal (or 16 in decimal). You’ll get <code>@&quot;Derek&quot;</code>, which is the contents of the <code>firstName</code> property. Increment by yet another 8 bytes to get the <code>lastName</code> property:
+</p><pre class="code-block">(lldb) po *(id *)(0x600000031f80 + 0x18)</pre>
+<p>You’ll get <code>@&quot;Selander&quot;</code>. Cool, right?
+</p>
+<p>Let’s visually revisit what you just did to hammer this home:
+</p><div class="image-90"><img src="graphics/img121.png"  alt="" title="" /></div>
+<p>You started at a base address that pointed to the instance of <code>DSObjectiveCObject</code>. For this particular example, this starting address is at <code>0x600000031f80</code>. You started by dereferencing this pointer, which gave you the <code>isa</code> variable, then you jumped by offsets of 8 bytes to the next Objective-C property, dereferenced the pointer at that offset, cast it to type <code>id</code> and spat it out to the console.
+</p>
+<p>Spelunking memory is a fun and instructional way to see what’s happening behind the scenes. This lets you appreciate the <code>SBValue</code> class even more. But you’re not at the point of talking about the <code>SBValue</code> class, as you still have two more classes to explore. The first is a Swift class with no superclass, and the second is a Swift class which inherits from <code>NSObject</code>. You’ll explore the non superclass Swift object first.
+</p>
+<h3 class="segment-chapter">Swift memory layout with no superclass</h3>
+
+<div class="note">
+<p><em>Note</em>: It’s worth mentioning right up front: the Swift ABI is still fluctuating. This means the information below could change before the Swift ABI completes. The day a new version of Xcode breaks the information in the following section, feel free to complain in ALL CAPS in the forums!
+</p></div>
+
+<p>Time to explore a Swift class with no superclass! In the Allocator project, jump to <em>ASwiftClass.swift</em> and take a look at what’s there.
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">ASwiftClass</span> </span>{
+  <span class="hljs-keyword">let</span> eyeColor = <span class="hljs-type">UIColor</span>.brown
+  <span class="hljs-keyword">let</span> firstName = <span class="hljs-string">"Derek"</span>
+  <span class="hljs-keyword">let</span> lastName = <span class="hljs-string">"Selander"</span>
+  
+  <span class="hljs-keyword">required</span> <span class="hljs-keyword">init</span>() { }
+}</pre>
+<p>Here, you have the Swift equivalent for <code>DSObjectiveCObject</code> with the obvious “Swifty” changes.
+</p>
+<p>Again, you can imagine this Swift class as a C struct with some interesting differences from its Objective-C counterpart. Check out the following pseudocode:
+</p><pre class="code-block"><span class="hljs-keyword">struct</span> ASwiftClass {
+  Class isa;
+  uint64_t refCounts;
+
+  <span class="hljs-built_in">UIColor</span> *eyeColor;
+
+  <span class="hljs-keyword">struct</span> _StringCore {
+    uintptr_t _baseAddress;
+    uintptr_t _countAndFlags;
+    uintptr_t _owner;
+  } firstName;
+
+  <span class="hljs-keyword">struct</span> _StringCore {
+    uintptr_t _baseAddress;
+    uintptr_t _countAndFlags;
+    uintptr_t _owner;
+  } firstName;
+}</pre>
+<p>Pretty interesting right? You still have that <code>isa</code> variable as the first parameter.
+</p>
+<p>After the <code>isa</code> variable, there’s 8 bytes reserved for a <code>refCounts</code> variable. This differs to your typical Objective-C object which doesn’t contain this reference counter at this offset. Note the <code>uint64_t</code> type, which indicates that 8 bytes are reserved — even in a 32 bit platform. This differs from the <code>uintptr_t</code>, which will be 32 bit or 64 bit depending on the hardware.
+</p>
+<p>Next, you have the normal <code>UIColor</code>, but that’s where this <code>ASwiftClass</code> struct goes completely off the rails.
+</p>
+<p>A Swift <code>String</code> is a very interesting “object”. In fact, a Swift <code>String</code> is a struct within the <code>ASwiftClass</code> struct.There’s three parameters for every Swift <code>String</code> when you’re jumping around in memory:
+</p>
+<ul>
+<li>
+<p>There is the actual pointer to the string’s character data.
+</p></li>
+
+<li>
+<p>Following that are the length and flags mixed into one parameter; it could be Unichar, ASCII, or some other crazy thing I don’t know how to interpret.
+</p></li>
+
+<li>
+<p>Finally, you have a reference to any of its owners.
+</p></li>
+</ul>
+
+<p>Since you are declaring these strings at compile time (with those <code>let</code> declarations), there’s no need for owners since the compiler will only need to reference offsets to the actual location of the strings, as they’re immutable.
+</p>
+<p>This Swift <code>String</code> struct actually makes the assembly calling convention rather interesting. If you pass a <code>String</code> to a function, it will actually pass in three parameters (and use three registers) instead of a pointer to a struct containing the three parameters (in one register). Don’t believe me? Check it out yourself when you’re done with this chapter!
+</p>
+<p>Back to LLDB and jumping through an object.
+</p>
+<p>Clear the LLDB screen with a <em>⌘ + K</em>, then resume the application through LLDB or the Xcode GUI.
+</p>
+<p>You’re going to do the exact same thing with the <code>ASwiftClass</code> that you did with <code>DSObjectiveCObject</code>. Use the developer/designer “approved” <code>UIPickerView</code> and select <em>Allocator.SwiftClass</em>. Remember, to correctly reference a Swift class (i.e. in <code>NSClassFromString</code> and friends), you need the module name prepended to the classname with a period separating the two.
+</p>
+<p>Tap the <em>Allocate Class</em> button and copy the memory address spat out to the console.
+</p><div class="image-60"><img src="graphics/img122.png"  alt="" title="" /></div>
+<p>You’ll get something similar to the following:
+</p><pre class="code-block">&lt;Allocator.ASwiftClass: 0x61800009d830&gt;</pre>
+<p>Usually, Swift hides the pointer in the <code>description</code> and <code>debugDescription</code> methods, but there’s something sneaky compiled into this project that you’ll come across in a second.
+</p>
+<p>For now, grab that memory address and stick it in the clipboard.
+</p>
+<p>First use LLDB to ensure it’s valid, by <code>po</code>-ing it:
+</p><pre class="code-block">(lldb) po 0x61800009d830</pre>
+<p>If you get something different than the following, you should be more than somewhat surprised:
+</p><pre class="code-block">&lt;Allocator.ASwiftClass: 0x61800009d830&gt;</pre>
+<p>Even though this is a pure Swift object, you were able to get the dynamic description in the Objective-C context. That means you can climb the class hierarchy to see the parent class!
+</p><pre class="code-block">(lldb) po [0x61800009d830 superclass]</pre>
+<p>You’ll get an interesting class with the name of:
+</p><pre class="code-block">SwiftObject</pre>
+<p>You’ll explore this class more in a second. For now, start jumping around in memory. Dereference the pointer’s address and prove to yourself that the first parameter is that <code>isa</code> <code>Class</code> variable:
+</p><pre class="code-block">(lldb) po *(id *)0x61800009d830</pre>
+<p>You’ll get <code>Allocator.ASwiftClass</code>. Now check out that reference counter variable:
+</p><pre class="code-block">(lldb) po *(id *)(0x61800009d830 + 0x8)</pre>
+<p>You’ll get something similar to the following:
+</p><pre class="code-block">0x0000000000000002</pre>
+<p>It’s clear that the address here is not a Objective-C address, since <code>*(id *)0x0000000200000004</code> would point to a class if it were a valid instance/class. Instead, this is the reference counter unique to Swift classes. Let’s see how this thing works.
+</p>
+<p>Use LLDB to manually retain this class:
+</p><pre class="code-block">(lldb) po [0x61800009d830 retain]</pre>
+<p>Press the up arrow twice to retrieve the previous command and execute it again:
+</p><pre class="code-block">(lldb) po *(id *)(0x61800009d830 + 0x8)</pre>
+<p>You’ll now get a slightly different number:
+</p><pre class="code-block">0x0000000200000002</pre>
+<p>Notice the middle hex value jumped up by 2. Shooting from the hip, this giant word should actually be viewed as 2 separate integer (32-bit) fields instead of one 64-bit field. See if <code>release</code>’ing this reference brings the count back down:
+</p><pre class="code-block">(lldb) po [0x61800009d830 release]</pre>
+<p>Yep, up arrow twice again, then Enter.
+</p><pre class="code-block">(lldb) po *(id *)(0x61800009d830 + 0x8)</pre>
+<p>You’ll get your happy, original value:
+</p><pre class="code-block">0x0000000000000002</pre>
+<p>Now that you’ve got past the <code>isa</code> and the <code>refCounts</code> it’s time to turn your attention to those lovely properties in the <code>ASwiftClass</code> instance.
+</p>
+<p>Clear the screen to start fresh, then increment your offset amount in LLDB.
+</p><pre class="code-block">(lldb) po *(id *)(0x61800009d830 + 0x10)</pre>
+<p>You’ll get the internal representation of <code>UIColor</code>’s brown:
+</p><pre class="code-block"><span class="hljs-type">UIExtendedSRGBColorSpace</span> <span class="hljs-number">0.6</span> <span class="hljs-number">0.4</span> <span class="hljs-number">0.2</span> <span class="hljs-number">1</span></pre>
+<p>Jump another 8 bytes and start exploring the firstName String structure.
+</p><pre class="code-block">(lldb) po *(id *)(0x61800009d830 + 0x18)
+0x0000000101f850d0</pre>
+<p>As you saw in that pseudocode struct, this is the actual base address for the start of the Swift string. Internally this base address can be viewed as a C <code>char*</code> or a C <code>unichar*</code> (useful for all those 💩 emojis). So all you need to do is cast it to the correct type. Since the Swift String <code>&quot;Derek&quot;</code> definitely falls in the ASCII realm, cast this address to a <code>char*</code> instead of type <code>id</code>:
+</p><pre class="code-block">(lldb) po *(char* *)(0x61800009d830 + 0x18)
+&quot;Derek&quot;</pre>
+<p>Now take a look at the <code><em>_countAndFlags</em></code> offset. Bump your offset to <code>0x20</code> and revert back to using a casting type of <em>id</em> and keep on exploring. <code>id</code> is a good default, because it resolves to an Objective-C object if it can, and to a hex address if it can’t.
+</p><pre class="code-block">(lldb) po *(id *)(0x61800009d830 + 0x20)</pre>
+<p>You’ll get the following:
+</p><pre class="code-block">0x0000000000000005</pre>
+<p>Again, this represents the flags and length. Since &quot;Derek&quot; is of length 5, you get 5 in the least significant location of the hex value. The remaining zeroes indicate there are no flags being applied (i.e. as the format for <code>unichar</code> instead of <code>char</code>).
+</p>
+<p>Finally, up your offset amount and go after the <code><em>_owner</em></code> part of the Swift String:
+</p><pre class="code-block">(lldb) po *(id *)(0x61800009d830 + 0x28)</pre>
+<p>This will dump out <code>nil</code> since that’s the Objective-C equivalent of <code>0x0000000000000000</code>. As mentioned earlier, there’s no need for an “owner” since this string is created at compile time.
+</p>
+<p>No need to go after the <code><em>lastName</em></code> property. You’ve got the idea of how this works.
+</p>
+<h3 class="segment-chapter">The SwiftObject class: a detour in the detour</h3>
+
+<p>But wait, you’ve totally overlooked the <em>SwiftObject</em> class, which was the superclass of <code>ASwiftClass</code>! Let’s use <em>image lookup</em> to dump methods implemented by this class.
+</p>
+<p>In LLDB, type the following:
+</p><pre class="code-block">(lldb) image lookup -rn SwiftObject</pre><div class="image-80"><img src="graphics/img123.png"  alt="" title="" /></div>
+<p>I don’t know about you, but I am tired of looking at that ugly formatting output. It’s too hard to read it correctly. If you’ve made this far in this book, you know you have the freedom to change anything necessary to make your life easier.
+</p>
+<p>Use the lldb Python API to make a <i>much</i> prettier query:
+</p><pre class="code-block">(lldb) script srch = lldb.target.FindGlobalFunctions(&apos;SwiftObject&apos;, 0, lldb.eMatchTypeRegex)</pre>
+<p>You’re declaring a search query which is of type <code><em>SBSymbolContextList</em></code> and assigned it to <code><em>srch</em></code>. This is somewhat like a Python <code>list</code> of <code><em>SBSymbolContext</em></code>’s.
+</p>
+<p>I’ll leave it to you to grab the documentation of <code><em>FindGlobalFunctions</em></code>  by <code><em>gdocumentation</em></code>’ing <code><em>SBTarget</em></code>.
+</p>
+<p>Now type this into LLDB:
+</p><pre class="code-block">(lldb) script print &quot;\n&quot;.join(map(lambda a: str(a.symbol.name), srch))</pre>
+<p>This applies a lambda to grab the function names and join each object in this <code>list</code> by a newline.
+</p><div class="image-80"><img src="graphics/img124.png"  alt="" title="" /></div>
+<p>Much better. Maybe that would be a good script to write in an upcoming chapter.
+</p>
+<p>OK, back to the goal at hand. You’re exploring the methods implemented by this Objective-C-ish <code>SwiftObject</code> class. Since it’s using Objective-C code, it’s fair game for method swizzling. Take note of the <code><em>description</em></code> and <code><em>debugDescription</em></code> methods implemented by this <code>SwiftObject</code>.
+</p>
+<p>The Allocator project is actually swizzling <em>debugDescription</em> on the <code>SwiftObject</code> to alter the output and show the pointer for the <code>SwiftObject</code> subclass. This logic is found in <em>NSObject+DS</em><em>_</em><em>SwiftObject.m</em>. The Swift language and the Swift LLDB context go out of their way to hide this pointer, which can be quite annoying.
+</p>
+<p>The dumped output means any Swift class is still open for swizzling and Objective-C funtime er... runtime amusement, whether it inherits from <code>NSObject</code>, or from no superclass at all. It’s good to keep this in mind for security reasons within your application.
+</p>
+<h3 class="segment-chapter">Swift memory layout with NSObject superclass</h3>
+
+<p>Final one. You know the drill, so we’ll speed this one up a bit and skip the actual debugging session.
+</p>
+<p>Check out the sourcecode for <em>ASwiftNSObjectClass.swift</em>:
+</p><pre class="code-block"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">ASwiftNSObjectClass</span>: <span class="hljs-title">NSObject</span> </span>{
+  <span class="hljs-keyword">let</span> eyeColor = <span class="hljs-type">UIColor</span>.brown
+  <span class="hljs-keyword">let</span> firstName = <span class="hljs-string">"Derek"</span>
+  <span class="hljs-keyword">let</span> lastName = <span class="hljs-string">"Selander"</span>
+  
+  <span class="hljs-keyword">required</span> <span class="hljs-keyword">override</span> <span class="hljs-keyword">init</span>() { }
+}</pre>
+<p>It’s the same thing as the <code>ASwiftClass</code>, except it inherits from <code>NSObject</code> instead of from nothing.
+</p>
+<p>So is there any difference in the generated C struct pseudocode?
+</p><pre class="code-block"><span class="hljs-keyword">struct</span> ASwiftNSObjectClass {
+  Class isa;
+  uintptr_t referenceCounts;
+
+  <span class="hljs-built_in">UIColor</span> *eyeColor;
+
+  <span class="hljs-keyword">struct</span> _StringCore {
+    uintptr_t _baseAddress;
+    uintptr_t _countAndFlags;
+    uintptr_t _owner;
+  } firstName;
+
+  <span class="hljs-keyword">struct</span> _StringCore {
+    uintptr_t _baseAddress;
+    uintptr_t _countAndFlags;
+    uintptr_t _owner;
+  } firstName;
+}</pre>
+<p>Nope! There’s no struct pseudocode difference when compared to the <code>ASwiftClass</code>. The main difference is it’s a lot easier to introspect this class since <code>NSObject</code> implements far more methods than the <code>SwiftObject</code> class.
+</p>
+<p>Let’s skip the debugging session and just talk about what will happen when you try <em>retain</em>’ing an instance of this class: the <em>refCounts</em> variable will <i>not</i> be modified. This makes sense because Objective-C has its own implementation of <code>retain</code>/<code>release</code> that’s different from the Swift implementation.
+</p>
+<p>You can finally look at the <code><em>SBValue</em></code> class I’ve been itching to describe to you!
+</p>
+<h2 class="segment-chapter">SBValue</h2>
+
+<p>Yay! Time to talk about this awesome class.
+</p>
+<p><code><em>SBValue</em></code> is responsible for interpreting the parsed expressions from your JIT code. Think of <code>SBValue</code> as a representation that lets you explore the members within your object, just as you did above, but without all that ugly dereferencing. Within the <code>SBValue</code> instance, you can easily access all members of your struct... er, I mean, your Objective-C or Swift classes.
+</p>
+<p>Within the <code>SBTarget</code> and <code>SBFrame</code> class, there’s a method named <code><em>EvaluateExpression</em></code>, which will take your expression as a Python <code>str</code> and return an <code>SBValue</code> instance. In addition, there’s an optional second parameter that lets you specify how you want your code to be parsed. You’ll start without the optional second parameter, and explore it later.
+</p>
+<p>Jump back into the LLDB console and make sure the Allocator project is still running. Make sure the LLDB console is up (i.e. the program is paused), clear the console and type the following:
+</p><pre class="code-block">(lldb) po [DSObjectiveCObject new]</pre>
+<p>You’ll get something similar to the following:
+</p><pre class="code-block">&lt;DSObjectiveCObject: 0x61800002eec0&gt;</pre>
+<p>This ensures you can create a valid instance of a <code>DSObjectiveCObject</code>.
+</p>
+<p>This code works, so you can apply it to the <code>EvaluateExpression</code> method of either the global <code>SBTarget</code> or <code>SBFrame</code> instance:
+</p><pre class="code-block">(lldb) script lldb.frame.EvaluateExpression(&apos;[DSObjectiveCObject new]&apos;)</pre>
+<p>You’ll get the usual cryptic output with the class but no context to describe what this does:
+</p><pre class="code-block">&lt;lldb.SBValue; proxy of &lt;Swig Object of type &apos;lldb::SBValue *&apos; at 0x10ac78b10&gt; &gt;</pre>
+<p>You’ve got to use <code>print</code> to get context for these classes:
+</p><pre class="code-block">(lldb) script print lldb.target.EvaluateExpression(&apos;[DSObjectiveCObject new]&apos;)</pre>
+<p>You’ll get your happy <code>debugDescription</code> you’ve become accustomed to.
+</p><pre class="code-block">(DSObjectiveCObject *) $2 = 0x0000618000034280</pre>
+<div class="note">
+<p><em>Note</em>: If you mistype something, you’ll still get an instance of <code>SBValue</code>, so make sure it’s printed out the item you expect it should. For example, if you mistyped the JIT code, you might get something like <code>** = &lt;could not resolve type&gt;**</code> from the <code>SBValue</code>.
+</p></div>
+
+<div class="note">
+<p>You can verify the <code>SBValue</code> succeeded by checking the <code><em>SBError</em></code> instance within your <code>SBValue</code>. If your <code>SBvalue</code> was named <code>sbval</code>, you could do <code>sbval.GetError().Success()</code>, or more simply <code>sbval.error.success</code>. <code>print</code> as a quick way to see if it worked or not.
+</p></div>
+
+<p>Modify this command so you’re assigning it to the variable <code><em>a</em></code> inside the Python context:
+</p><pre class="code-block">(lldb) script a = lldb.target.EvaluateExpression(&apos;[DSObjectiveCObject new]&apos;)</pre>
+<p>Now apply the Python <code>print</code> function to the <code>a</code> variable:
+</p><pre class="code-block">(lldb) script print a</pre>
+<p>Again, you’ll get something similar to the following:
+</p><pre class="code-block">(DSObjectiveCObject *) $0 = 0x0000608000033260</pre>
+<p>Great! You have an <code>SBValue</code> instance stored at <code>a</code> and are already knowledgeable about the memory layout of the <code>DSObjectiveCObject</code>. You know <code>a</code> is holding an <code>SBValue</code> that is a pointer to the <code>DSObjectiveCObject</code> class.
+</p>
+<p>You can grab the <code>description</code> of the <code>DSObjectiveCObject</code> class by using the <code>GetDescription()</code>, or more simply <code>description</code> property of <code>SBValue</code>.
+</p>
+<p>Type the following:
+</p><pre class="code-block">(lldb) script print a.description</pre>
+<p>You’ll see something similar to the following:
+</p><pre class="code-block">&lt;DSObjectiveCObject: 0x608000033260&gt;</pre>
+<p>You can also get the <code>value</code> property, which returns a Python <code>String</code> containing the address of this instance:
+</p><pre class="code-block">(lldb) script print a.value</pre>
+<p>Just the value this time:
+</p><pre class="code-block">0x0000608000033260</pre>
+<p>Copy the output of <code>a.value</code> and ensure <code>po</code>’ing this pointer gives you the original, correct reference:
+</p><pre class="code-block">(lldb) po 0x0000608000033260</pre>
+<p>Yup:
+</p><pre class="code-block">&lt;DSObjectiveCObject: 0x608000033260&gt;</pre>
+<p>If you want the address expressed in a Python number instead of a Python <code>str</code>, you can use the <code>signed</code> or <code>unsigned</code> property:
+</p><pre class="code-block">(lldb) script print a.signed</pre>
+<p>Like this:
+</p><pre class="code-block">106102872289888</pre>
+<p>Formatting the number to hexadecimal will produce the pointer to this instance of <code>DSObjectiveCObject</code>:
+</p><pre class="code-block">(lldb) p/x 106102872289888</pre>
+<p>And you’re back to where you were before:
+</p><pre class="code-block">(long) $3 = 0x0000608000033260</pre>
+<h3 class="segment-chapter">Exploring properties through SBValue offsets</h3>
+
+<p>What about those properties stuffed inside that <code>DSObjectiveCObject</code> instance? Let’s explore those!
+</p>
+<p>Use the <code><em>GetNumChildren</em></code> method available to <code>SBValue</code> to get its child count:
+</p><pre class="code-block">(lldb) script print a.GetNumChildren()
+4</pre>
+<p>You can think children as just an array. There’s a special API to traverse the children in a class called <em>GetChildAtIndex</em>, so you can explore children 0-3 in LLDB.
+</p>
+<p>Child 0:
+</p><pre class="code-block">(lldb) script print a.GetChildAtIndex(0)
+(NSObject) NSObject = {
+  isa = DSObjectiveCObject
+}</pre>
+<p>Child 1:
+</p><pre class="code-block">(lldb) script print a.GetChildAtIndex(1)
+(UICachedDeviceRGBColor *) _eyeColor = 0x0000608000070e00</pre>
+<p>Child 2:
+</p><pre class="code-block">(lldb) script print a.GetChildAtIndex(2)
+(__NSCFConstantString *) _firstName = 0x000000010db83368 @&quot;Derek&quot;</pre>
+<p>Child 3:
+</p><pre class="code-block">(lldb) script print a.GetChildAtIndex(3)
+(__NSCFConstantString *) _lastName = 0x000000010db83388 @&quot;Selander&quot;</pre>
+<p>Each of these will return an <code>SBValue</code> in itself, so you can explore that object even further if you desired. Take the <code>firstName</code> property into account. Type the following to just get the description:
+</p><pre class="code-block">(lldb) script print a.GetChildAtIndex(2).description
+Derek</pre>
+<p>It’s important to remember the Python variable <code>a</code> is a pointer to an object. Type the following:
+</p><pre class="code-block">(lldb) script a.size
+8</pre>
+<p>This will print out a value saying <code>a</code> is 8 bytes long. But you want to get to the actual content! Fortunately, the <code>SBValue</code> has a <em>deref</em> property that returns another <code>SBValue</code>. Explore the output with the <code>size</code> property:
+</p><pre class="code-block">(lldb) script a.deref.size</pre>
+<p>This returns the value <em>32</em> since it makes up the <code>isa</code>, <code>eyeColor</code>, <code>firstName</code>, and <code>lastName</code>, each of them being 8 bytes long themselves as they are all pointers.
+</p>
+<p>Here’s another way to look at what the <code>deref</code> property is doing. Explore the <code>SBType</code> class (you can look that one up yourself) of the <code>SBValue</code>.
+</p><pre class="code-block">(lldb) script print a.type.name</pre>
+<p>You’ll get this:
+</p><pre class="code-block">DSObjectiveCObject *</pre>
+<p>Now do the same thing through the <em>deref</em> property:
+</p><pre class="code-block">(lldb) script print a.deref.type.name</pre>
+<p>You’ll now get the normal class:
+</p><pre class="code-block">DSObjectiveCObject</pre>
+<h3 class="segment-chapter">Viewing raw data through SBValue</h3>
+
+<p>You can even dump the raw data out with the <code><em>data</em></code> property in <code>SBValue</code>! This is represented by a class named <code><em>SBData</em></code>, which is yet another class you can check out on your own.
+</p>
+<p>Print out the data of the pointer to <code>DSObjectiveCObject</code>:
+</p><pre class="code-block">(lldb) script print a.data</pre>
+<p>This will print out the physical bytes that make up the object. Again, this is the pointer to <code>DSObjectiveCObject</code>, not the object itself.
+</p><pre class="code-block">60 32 03 00 80 60 00 00                          `2...`..</pre>
+<p>Remember, each byte can be represented as two digits in hexadecimal.
+</p>
+<p>Do you remember covering the <em>little-endian</em> formatting in Chapter 11, “Assembly &amp; Memory” and how the raw data is reversed?
+</p>
+<p>Compare this with the <code><em>value</em></code> property of <code>SBValue</code>.
+</p><pre class="code-block">(lldb) script print a.value
+0x0000608000033260</pre><div class="image-60"><img src="graphics/img125.png"  alt="" title="" /></div>
+<p>Notice how the values have been flipped. For example, the final two hex digits of my pointer are the first grouping (aka byte) in the raw data. In my case, the raw data contains <code>0x60</code> as the first value, while the pointer contains <code>0x60</code> as the final value.
+</p>
+<p>Use the <code><em>deref</em></code> property to grab <i>all</i> the bytes that make up this <code>DSObjectiveCObject</code>.
+</p><pre class="code-block">(lldb) script print a.deref.data
+f0 54 b8 0d 01 00 00 00 00 0e 07 00 80 60 00 00  .T...........`..
+68 33 b8 0d 01 00 00 00 88 33 b8 0d 01 00 00 00  h3.......3......</pre>
+<p>This is yet another way to visualize what is happening. You were jumping 8 bytes each time when you were spelunking in memory with that cute <code>po *(id*)(0x0000608000033260 + multiple_of_8)</code> command.
+</p>
+<h3 class="segment-chapter">SBExpressionOptions</h3>
+
+<p>As mentioned when discussing the <code>EvaluateExpression</code> API, there’s an optional second parameter that will take an instance of type <em>SBExpressionOptions</em>. You can use this command to pass in specific options for the JIT execution.
+</p>
+<p>In LLDB, clear the screen, start fresh and type the following:
+</p><pre class="code-block">(lldb) script options = lldb.SBExpressionOptions()</pre>
+<p>You’ll get no output upon success. Next, type:
+</p><pre class="code-block">(lldb) script options.SetLanguage(lldb.eLanguageTypeSwift)</pre>
+<p><code><em>SBExpressionOptions</em></code> has a method named <code><em>SetLanguage</em></code> (when in doubt, use <code><em>gdocumentation SBExpressionOptions</em></code>), which takes an LLDB module enum of type <em>lldb::LanguageType</em>. The LLDB authors have a convention for sticking an &quot;e&quot; before an enum, the enum name, then the unique value.
+</p>
+<p>This sets the options to evaluate the code as Swift instead of whatever the default is, based on the language type of <code>SBFrame</code>.
+</p>
+<p>Now tell the <code>options</code> variable to interpret the JIT code as a of type ID (i.e. <code>po</code>, instead of <code>p</code>):
+</p><pre class="code-block">(lldb) script options.SetCoerceResultToId()</pre>
+<p><code><em>SetCoerceResultToId</em></code> takes an optional Boolean, which determines if it should be interpreted as an <code>id</code> or not. By default, this is set to <code>True</code>.
+</p>
+<p>To recap what you did here: you set the options to parse this expression using the Python API instead of the options passed to us through the expression command.
+</p>
+<p>For example, <code>SBExpressionOptions</code> you’ve declared so far is pretty much equivalent to the following options in the <code>expression</code> command:
+</p><pre class="code-block">expression -lswift -O -- your_expression_here</pre>
+<p>Next, create an instance of the <code>ASwiftClass</code> method only using the <code>expression</code> command. If this works, you’ll try out the same expression in the <code>EvaluateExpression</code> command. In LLDB type the following:
+</p><pre class="code-block">(lldb) e -lswift -O -- ASwiftClass()</pre>
+<p>You’ll get an ugly little error for output...
+</p><pre class="code-block">error: &lt;<span class="hljs-type">EXPR</span>&gt;:<span class="hljs-number">3</span>:<span class="hljs-number">1</span>: error: use of unresolved identifier '<span class="hljs-type">ASwiftClass'</span>
+<span class="hljs-type">ASwiftClass</span>()
+^~~~~~~~~~~</pre>
+<p>Oh yeah, — you need to import the <em>Allocator</em> module to make Swift play nicely in the debugger.
+</p>
+<p>In LLDB:
+</p><pre class="code-block">(lldb) e -lswift -- import Allocator</pre>
+<div class="note">
+<p><em>Note</em>: This is a problem many LLDB users complain about: LLDB can’t properly evaluate code that should be able to execute. Adding this import logic will modify LLDB’s Swift <em>expression prefix</em>, which is basically a set of header files that a referenced right before you JIT code is evaluated.
+</p>
+<p>LLDB can’t see the class <code>ASwiftClass</code> in the JIT code when you’re stopped in the non-Swift debugging context. This means you need to append the headers to the expression prefix that belongs to the Allocator module.
+</p>
+<p>There’s a great explanation from one of the LLDB authors about this very problem here: <a href="http://stackoverflow.com/questions/19339493/why-cant-lldb-evaluate-this-expression">http://stackoverflow.com/questions/19339493/why-cant-lldb-evaluate-this-expression</a>.
+</p></div>
+
+<p>Execute the previous command again. Up arrow twice then Enter:
+</p><pre class="code-block">(lldb) e -lswift -O -- ASwiftClass()</pre>
+<p>You’ll get a reference to an instance of the <code>ASwiftClass()</code>.
+</p>
+<p>Now that you know this works, use the <code><em>EvaluateExpression</em></code> method with the <code>options</code> parameter as the second parameter this time and assign the output to the variable <code><em>b</em></code>, like so:
+</p><pre class="code-block">(lldb) script b = lldb.target.EvaluateExpression(&apos;ASwiftClass()&apos;, options)</pre>
+<p>If everything went well, you’ll get a reference to a <code>SBValue</code> in the <code>b</code> Python variable.
+</p>
+<div class="note">
+<p><em>Note</em>: It’s worth pointing out some properties of <code>SBValue</code> will not play nicely with Swift. For example, dereferencing a Swift object with <code>SBValue</code>’s <code>deref</code> or <code>address_of</code> property will not work properly. You can coerce this pointer to an Objective-C reference by casting the pointer as a <code>SwiftObject</code>, and everything will then work fine. Like I said, they make you work for it when you’re trying to go after pointers in Swift!
+</p></div>
+
+<h3 class="segment-chapter">Referencing variables by name with SBValue</h3>
+
+<p>Referencing child <code>SBValues</code> via <code><em>GetChildAtIndex</em></code> from <code>SBValue</code> is a rather ho-hum way to navigate to an object in memory. What if the author of this class added a property before <code>eyeColor</code> that totally screwed up your offset logic when traversing this <code>SBValue</code>?
+</p>
+<p>Fortunately, <code>SBValue</code> has yet <i>another</i> method that lets you reference instance variables by name instead of by offset: <code><em>GetValueForExpressionPath</em></code>.
+</p>
+<p>Jump back to LLDB and type the following:
+</p><pre class="code-block">(lldb) script print b.GetValueForExpressionPath(&apos;.firstName&apos;)</pre>
+<p>You can keep drilling down into the child’s own struct if you wish:
+</p>
+<p>How did I obtain the name of child <code>SBValue</code>s? If you had no clue of the name for the child <code>SBValue</code>, all you have to do is get to the child using the <code><em>GetIndexOfChild</em></code> API, then use the <code><em>name</em></code> property on that <code>SBValue</code> child.
+</p>
+<p>For example, if I didn’t know the name of the <code>UIColor</code> property found in the <em>b</em> <code>SBValue</code>, I could do the following:
+</p><div class="image-90"><img src="graphics/img126.png"  alt="" title="" /></div>
+<h2 class="segment-chapter">lldb.value</h2>
+
+<p>One final cool thing you can do is create a Python reference that contains the <code>SBValue</code>’s properties as the Python object’s properties (wait... what?). Think of this as an object through which you can reference variables using Python properties instead of Strings.
+</p>
+<p>Back in the console, instantiate a new <code><em>value</em></code> object from your <code><em>b</em></code> <code>SBValue</code>:
+</p><pre class="code-block">(lldb) script c = lldb.value(b)</pre>
+<p>This will create the special LLDB Python object of type <code>value</code>. Now you can reference its instance variables just like you would a normal object!
+</p>
+<p>Type the following into LLDB:
+</p><pre class="code-block">(lldb) script print c.firstName</pre>
+<p>You can also cast the child object back into an <code>SBValue</code> so you can query it or apply it to a <code>for</code> loop, like so:
+</p><pre class="code-block">(lldb) script print c.firstName.sbvalue.signed</pre>
+<p>Again, if you don’t know the name of a child <code>SBValue</code>, use the <code>GetChildAtIndex</code> API to get the child and get its name from the <code>name</code> property.
+</p>
+<div class="note">
+<p><em>Note</em>: Although the <code>lldb.value</code> class is awesome, this comes at a cost. It’s rather expensive to create and access properties through this type of class. If you are parsing a huge <code>NSArray</code> (or <code>Array&lt;Any&gt;</code>, for you Swifties), using this class will definitely slow you down. Play around with it and find the sweet spot between speed and convenience.
+</p></div>
+
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>Holy cow... how dense was that chapter!? Fortunately you have come full circle. You can use the options provided by your custom command to dynamically generate your JIT script code. From the return value of your JIT code, you can write scripts that have custom logic based upon the return <code>SBValue</code> that is parsed through the <code>EvaluateExpression</code> APIs.
+</p>
+<p>This can unlock some amazing scripts for you. In any process to which you can attach LLDB, you can run your own custom code and handle your own custom return values within your Python script. There’s no need to deal with signing issues or loading of frameworks or anything like that.
+</p>
+<p>The remaining chapters in this section will focus on the composition of some creative scripts and how they can make your debugging (or reverse engineering) life much simpler. Theory time is over. It’s time for some fun!
+</p></body></html>

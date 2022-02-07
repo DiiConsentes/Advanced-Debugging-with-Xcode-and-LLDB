@@ -1,0 +1,308 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 7: Image</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 7: Image</h1>
+
+<p>By now, you have a solid foundation in debugging. You can find and attach to processes of interest, efficiently create regular expression breakpoints to cover a wide range of culprits, navigate the stack frame and tweak variables using the <code>expression</code> command.
+</p>
+<p>However, it’s time to explore one of the best tools for finding code of interest through the powers of LLDB. In this chapter, you’ll take a deep dive into the <code><em>image</em></code> command.
+</p>
+<p>The <code>image</code> command is an alias for the <code><em>target modules</em></code> subcommand. The <code>image</code> command specializes in querying information about <em>modules</em>; that is, the code loaded and executed in a process. Modules can comprise many things, including the main executable, frameworks, or plugins. However, the majority of these modules typically come in the form of <em>dynamic libraries</em>. Examples of dynamic libraries include UIKit for iOS or AppKit for macOS.
+</p>
+<p>The <code>image</code> command is great for querying information about any private frameworks and its classes or methods not publicly disclosed in these header files.
+</p>
+<h2 class="segment-chapter">Wait... modules?</h2>
+
+<p>You’ll continue using the <code>Signals</code> project. Fire up the project, build on the iPhone X Simulator and run.
+</p>
+<p>Pause the debugger and type the following into the LLDB console:
+</p><pre class="code-block">(lldb) image list </pre>
+<p>This command will list all the modules currently loaded. You’ll see a lot! The start of the list should look something like the following:
+</p><pre class="code-block">[  0] 1E1B0254-4F55-3985-92E4-B2B6916AD424 0x000000010e7e7000 /Users/derekselander/Library/Developer/Xcode/DerivedData/Signals-atjgadijglwyppbagqpvyvftavcw/Build/Products/Debug-iphonesimulator/Signals.app/Signals 
+[  1] 002B0442-3D59-3159-BA10-1C0A77859C6A 0x000000011e7c8000 /usr/lib/dyld 
+[  2] E991FA37-F8F9-39BB-B278-3ACF4712A994 0x000000010e817000 /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/Library/CoreSimulator/Profiles/Runtimes/iOS.simruntime/Contents/Resources/RuntimeRoot/usr/lib/dyld_sim </pre>
+<p>The first module is the app&apos;s main binary, <code>Signals</code>. The second and third modules pertain to the dynamic link editors (dyld). These to modules allow your program to load dynamic libraries into memory as well as the main executable in your process.
+</p>
+<p>But there’s a lot more in this list! You can filter out just those of interest to you. Type the following into LLDB:
+</p><pre class="code-block">(lldb) image list Foundation</pre>
+<p>The output will look similar to the following:
+</p><pre class="code-block">[  0] D153C8B2-743C-36E2-84CD-C476A5D33C72 0x000000010eb0c000 /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/Library/CoreSimulator/Profiles/Runtimes/iOS.simruntime/Contents/Resources/RuntimeRoot/System/Library/Frameworks/Foundation.framework/Foundation </pre>
+<p>This is a useful way to find out information about just the module or modules you want.
+</p>
+<p>Let’s explore this output. There’s a few interesting bits in there:
+</p>
+<ol>
+<li>
+<p>The module’s UUID is printed out first (<code>D153C8B2-743C-36E2-84CD-C476A5D33C72</code>). The UUID is important for hunting down symbolic information and uniquely identifies the Foundation module.
+</p></li>
+</ol>
+
+<ol>
+<li>
+<p>Following the UUID is the load address (<code>0x000000010eb0c000</code>). This identifies where the Foundation module is loaded into the <code>Signals</code> executable’s process space.
+</p></li>
+
+<li>
+<p>Finally, you have the full path to where the module is located on disk.
+</p></li>
+</ol>
+
+<p>Let’s take a deeper dive into another common module, UIKit. Type the following into LLDB:
+</p><pre class="code-block">(lldb) image dump symtab UIKit -s address</pre>
+<p>This will dump all the symbol table information available for UIKit. It’s more output than you can shake a stick at! This command sorts the output by the address in which the functions are implemented in the UIKit module thanks to the <code>-s address</code> argument.
+</p>
+<p>There’s a lot of useful information in there, but you can’t go reading all that, now can you? You need a way to effectively query the UIKit module with a flexible way to search for code of interest.
+</p>
+<p>The <code><em>image lookup</em></code> command is perfect for filtering out all the data. Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -n &quot;-[UIViewController viewDidLoad]&quot;</pre>
+<p>This will dump out information relating just to UIViewController’s <code>viewDidLoad</code> instance method. You’ll see the name of the symbol relating to this method, and also where the code for that method is implemented inside the UIKit framework. This is good and all, but typing this is a little tedious and this can only dump out very specific instances.
+</p>
+<p>This is where regular expressions come into play. The <code>-r</code> option will let you do a regular expression query. Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn UIViewController</pre>
+<p>Not only will this dump out all UIViewController methods, it’ll also spit out results like <code>UIViewControllerBuiltinTransitionViewAnimator</code> since it contains the name <code>UIViewController</code>. You can be smart with the regular expression query to only spit out UIViewController methods. Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn &apos;\[UIViewController\ &apos;</pre>
+<p>Alternatively, you can use the <code>\s</code> meta character to indicate a space so you don&apos;t have to escape an actual space and surround it in quotes. The following expression is equivalent:
+</p><pre class="code-block">(lldb) image lookup -rn \[UIViewController\s</pre>
+<p>This is good, but what about categories? They come in the form of <code>UIViewController(CategoryName)</code>. Search for all <code>UIViewController</code> categories.
+</p><pre class="code-block">(lldb) image lookup -rn &apos;\[UIViewController\(\w+\)\ &apos;</pre>
+<p>This is starting to get complicated. The backslash at the beginning says you want the literal character for “[”, then UIViewController. Finally the literal character of “(” then one or more alphanumeric or underscore characters (denoted by <code>\w+</code>), then “)”, followed by a space.
+</p>
+<p>Working knowledge of regular expressions will help you to creatively query any public or private code in any of the modules loaded into your binary.
+</p>
+<p>Not only does this print out both public and private code, this will also give you hints to the methods the UIViewController class overrides from its parent classes.
+</p>
+<h3 class="segment-chapter">Hunting for code</h3>
+
+<p>Regardless of whether you’re hunting for public or private code, sometimes it’s just interesting trying to figure out how the compiler created the function name for a particular method. You briefly used the <code>image lookup</code> command above to find UIViewController methods. You also used it to hunt for how Swift property setters and getters are named in Chapter 4, “Stopping in Code”.
+</p>
+<p>However, there are many more cases where knowing how code is generated will give you a better understanding of where and how to create breakpoints for code you’re interested in. One particularly interesting example to explore is the method signature for Objective-C’s blocks.
+</p>
+<p>So what’s the best way to search for a method signature for an Objective-C block? Since you don’t have any clue on where to start searching for how blocks are named, a good way to start is by putting a breakpoint inside a block and then inspecting from there.
+</p>
+<p>Open <em>UnixSignalHandler.m</em>, then find the singleton method <code><em>sharedHandler</em></code>. Within the function, look for the following code:
+</p><pre class="code-block"><span class="hljs-built_in">dispatch_once</span>(&amp;onceToken, ^{
+  sharedSignalHandler = [[UnixSignalHandler alloc] initPrivate];
+});</pre>
+<p>Put a breakpoint using the Xcode GUI in the line beginning with <code><em>sharedSignalHandler</em></code>. Then build and run. Xcode will now pause on the line of code you just set a breakpoint on. Check out the top stack frame in the debugging window.
+</p><div class="image-90"><img src="graphics/img25.png"  alt="" title="" /></div>
+<p>You can find the name of the function you’re in using Xcode’s GUI. In the Debug Navigator you’ll see your stack trace and you can look at frame 0. That’s a little hard to copy and paste (well, impossible, actually). Instead, type the following into LLDB:
+</p><pre class="code-block">(lldb) frame info</pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block">frame #0: 0x000000010530cf70 Commons`__34+[UnixSignalHandler sharedHandler]_block_invoke((null)=0x000000010abb3470) at UnixSignalHandler.m:68</pre>
+<p>As you can see, the full function name is <code><em>__34+[UnixSignalHandler sharedHandler]_block_invoke</em></code>.
+</p>
+<p>There’s an interesting portion to the function name, <code><em>_block_invoke</em></code>. This might be the pattern you need to help uniquely identify blocks in Objective-C. Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn _block_invoke</pre>
+<p>This will do a regular expression search for the word <code><em>_block_invoke</em></code>. It will treat everything before and after the phrase as a wildcard.
+</p>
+<p>But wait! You accidentally printed out <i>all</i> the Objective-C blocks loaded into the program. This search included anything from UIKit, Foundation, iPhoneSimulator SDK, etc. You should limit your search to only search for the Signals module.
+</p>
+<p>Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn _block_invoke Signals</pre>
+<p>Nothing is printed out. What gives? Open the right Xcode panel and click on the <em>File Inspector</em>. Alternatively, press <em>⌘ + Option + 1</em> if you have the default Xcode keymap.
+</p>
+<p>If you look to where <em>UnixSignalHandler.m</em> is compiled, you’ll see it’s actually compiled into the <em>Commons</em> framework. So, redo that search and look for Objective-C blocks in the Commons module. Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn _block_invoke Commons</pre>
+<p>Finally, you’ll get some output!
+</p>
+<p>You’ll now see all the Objective-C blocks that you’ve searched for in the Commons framework.
+</p>
+<p>Now, let’s create a breakpoint to stop on a subset of these blocks you’ve found. Type the following into LLDB:
+</p><pre class="code-block">(lldb) rb appendSignal.*_block_invoke -s Commons</pre>
+<div class="note">
+<p><em>Note</em>: There is a subtle difference between searching for code in a module versus breaking in code for a module. Take the above commands as an example. When you wanted to search for all blocks in the Commons framework, you used <code>image lookup -rn _block_invoke Commons</code>. When you wanted to make breakpoints for blocks in the Commons framework, you used <code>rb appendSignal.*block_invoke -s Commons</code>. Take note of the <code>-s</code> argument vs the space.
+</p></div>
+
+<p>The idea is this breakpoint will hit on any block within the <code>appendSignal</code> method.
+</p>
+<p>Resume the program by clicking the play button or typing <code>continue</code> into LLDB. Jump over to Terminal and type the following:
+</p><pre class="code-block">pkill -SIGIO Signals</pre>
+<p>The signal you sent the program will be processed. However, before the signal gets visually updated to the tableview, your regex breakpoint will get hit.
+</p>
+<p>The first breakpoint you will hit will be in:
+</p><pre class="code-block">__38-[UnixSignalHandler appendSignal:sig:]_block_invoke</pre>
+<p>Go past this by continuing the debugger.
+</p>
+<p>Next you’ll hit a breakpoint in:
+</p><pre class="code-block">__38-[UnixSignalHandler appendSignal:sig:]_block_invoke_2</pre>
+<p>There’s an interesting item to note about this function name compared to the first; notice the number <em>2</em> in the method name. The compiler uses a base of <code>&lt;FUNCTION_NAME&gt;_block_invoke</code> for blocks defined within the function called <code>&lt;FUNCTION_NAME&gt;</code>. However, when there’s more than one block in the function, a number is appended to the end to denote this.
+</p>
+<p>As you learned in the previous chapter, the <code>frame variable</code> command will print all known local variable instances to a particular function. Try executing that command now to see the reference found in this particular block. Type the following into LLDB:
+</p><pre class="code-block">(lldb) frame variable</pre>
+<p>The output will look similar to the following:
+</p><pre class="code-block">(__block_literal_5 *)  = 0x0000608000275e80
+(int) sig = &lt;read memory from 0x41 failed (0 of 4 bytes read)&gt;
+
+(siginfo_t *) siginfo = &lt;read memory from 0x39 failed (0 of 8 bytes read)&gt;
+
+(UnixSignalHandler *const) self = &lt;read memory from 0x31 failed (0 of 8 bytes read)&gt;</pre>
+<p>Those read memory failures don’t look good! Step over once, either using the Xcode GUI or by typing <code>next</code> in LLDB. Next, execute <code>frame variable</code> again in LLDB. This time you’ll see something similar to the following:
+</p><pre class="code-block">(__block_literal_5 *)  = 0x0000608000275e80
+(int) sig = 23
+(siginfo_t *) siginfo = 0x00007fff587525e8
+(UnixSignalHandler *) self = 0x000061800007d440
+(UnixSignal *) unixSignal = 0x000000010bd9eebe</pre>
+<p>You needed to step over one statement, so the block executed some initial logic to setup the function, also known as the function prologue. The function prologue is a topic related to assembly, which you’ll learn about in Section II.
+</p>
+<p>This is actually quite interesting. First you see an object which references the block that’s being invoked. In this case it’s the type <code>__block_literal_5</code>. Then there are the <code>sig</code> and <code>siginfo</code> parameters that were passed into the Objective-C method where this block is invoked from. How did these get passed into the block?
+</p>
+<p>Well, when a block is created, the compiler is smart enough to figure out what parameters are being used by it. It then creates a function that takes these as parameters. When the block is invoked, it’s this function that is called, with the relevant parameters passed in.
+</p>
+<p>Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -t  __block_literal_5</pre>
+<p>You&apos;ll get something similar to the following:
+</p><pre class="code-block">Best match found in /Users/derekselander/Library/Developer/Xcode/DerivedData/Signals-efqxsbqzgzcqqvhjgzgeabtwfufy/Build/Products/Debug-iphonesimulator/Signals.app/Frameworks/Commons.framework/Commons:
+id = {0x100000cba}, name = &quot;__block_literal_5&quot;, byte-size = 52, decl = UnixSignalHandler.m:123, compiler_type = &quot;struct __block_literal_5 {
+    void *__isa;
+    int __flags;
+    int __reserved;
+    void (*__FuncPtr)();
+    __block_descriptor_withcopydispose *__descriptor;
+    UnixSignalHandler *const self;
+    siginfo_t *siginfo;
+    int sig;
+}&quot;</pre>
+<p>This is the object that defines the block! Neat!
+</p>
+<p>As you can see, this is almost as good as a header file for telling you how to navigate the memory in the block. Provided you cast the reference in memory to the type <code>__block_literal_5</code>, you can easily print out all the variables referenced by the block.
+</p>
+<p>Start by getting the stack frame’s variable information again by typing the following:
+</p><pre class="code-block">(lldb) frame variable</pre>
+<p>Next, find the address of the <code>__block_literal_5</code> object and print it out like so:
+</p><pre class="code-block">(lldb) po ((__block_literal_5 *)0x0000618000070200)</pre>
+<p>You should see something similar to the following:
+</p><pre class="code-block">&lt;__NSMallocBlock__: 0x0000618000070200&gt;</pre>
+<p>If you don’t, make sure the address you’re casting to a <code>__block_literal_5</code> is the address of your block as it will differ each time the project is run.
+</p>
+<div class="note">
+<p><em>Note</em>: Bug alert in lldb-900.0.57 where LLDB will incorrectly dereference the <code>__block_literal_5</code> pointer when executing the <code>frame variable</code> command. This means that the pointer output of <code>(__block_literal_5 *)</code> will give the <i>class</i> <em>NSMallocBlock</em> instead of the instance of <em>NSMallocBlock</em>. If you are getting the class description instead of an instance description, you can get around this by either referencing the <code>RDI</code> register immediately at the start of the function, or obtain the instance of the <code>__NSMallocBlock__</code> via <code>x/gx &apos;$rbp - 32&apos;</code> if you are further into the function.
+</p></div>
+
+<p>Now you can query the members of the <code>__block_literal_5</code> struct. Type the following into LLDB:
+</p><pre class="code-block">(lldb) p/x ((__block_literal_5 *)0x0000618000070200)-&gt;__FuncPtr</pre>
+<p>This will dump the location of the function pointer for the block. The output will look like the following:
+</p><pre class="code-block">(void (*)()) $1 = 0x000000010756d8a0 (Commons`__38-[UnixSignalHandler appendSignal:sig:]_block_invoke_2 at UnixSignalHandler.m:123)</pre>
+<p>The function pointer for the block points to the function which is run when the block is invoked. It’s the same address that is being executed right now! You can confirm this by typing the following, replacing the address with the address of your function pointer printed in the command you last executed:
+</p><pre class="code-block">(lldb) image lookup -a 0x000000010756d8a0</pre>
+<p>This uses the <code>-a</code> (address) option of <code>image lookup</code> to find out which symbol a given address relates to.
+</p>
+<p>Jumping back to the block struct’s members, you can also print out all the parameters passed to the block as well. Type the following, again replacing the address with the address of your block:
+</p><pre class="code-block">(lldb) po ((__block_literal_5 *)0x0000618000070200)-&gt;sig</pre>
+<p>This will output the signal number that was sent in as a parameter to the block’s parent function.
+</p>
+<p>There is also a reference to the <code>UnixSignalHandler</code> in a member of the struct called <code>self</code>. Why is that? Take a look at the block and hunt for this line of code:
+</p><pre class="code-block">[(<span class="hljs-built_in">NSMutableArray</span> *)<span class="hljs-keyword">self</span>.signals addObject:unixSignal];</pre>
+<p>It’s the reference to <code>self</code> the block captured, and uses to find the offset of where the <code>signals</code> array is. So the block needs to know what <code>self</code> is. Pretty cool, eh?
+</p>
+<p>Using the <code>image dump symfile</code> command in combination with the module is a great way to learn how a certain unknown data type works. It’s also a great tool to understand how the compiler generates code for your sources.
+</p>
+<p>Additionally, you can inspect how blocks hold references to pointers outside the block — a very useful tool when debugging memory retain cycle problems.
+</p>
+<h2 class="segment-chapter">Snooping around</h2>
+
+<p>OK, you’ve discovered how to inspect a private class’s instance variables in a static manner, but that block memory address is too tantalizing to be left alone. Try printing it out and exploring it using dynamic analysis. Type the following, replacing the address with the address of your block:
+</p><pre class="code-block">po 0x0000618000070200</pre>
+<p>LLDB will dump out a class indicating it’s an Objective-C class.
+</p><pre class="code-block">&lt;__NSMallocBlock__: 0x618000070200&gt;</pre>
+<p>This is interesting. The class is <code>__NSMallocBlock__</code>. Now that you’ve learned how to dump methods for both private and public classes, it’s time to explore what methods <code>__NSMallocBlock__</code> implements. In LLDB, type:
+</p><pre class="code-block">(lldb) image lookup -rn __NSMallocBlock__</pre>
+<p>Nothing. Hmm. This means <code>__NSMallocBlock__</code> doesn’t override any methods implemented by its super class. Type the following in LLDB to figure out the parent class of <code>__NSMallocBlock__</code>.
+</p><pre class="code-block">(lldb) po [__NSMallocBlock__ superclass]</pre>
+<p>This will produce a similarly named class named <code><em>__NSMallocBlock</em></code> — notice the lack of trailing underscores. What can you find out about this class? Does this class implement or override any methods? Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn __NSMallocBlock</pre>
+<p>The methods dumped by this command seems to indicate that <code>__NSMallocBlock</code> is responsible for memory management, since it implements methods like <code>retain</code> and <code>release</code>. What is the parent class of <code>__NSMallocBlock</code>? Type the following into LLDB:
+</p><pre class="code-block">(lldb) po [__NSMallocBlock superclass]</pre>
+<p>You’ll get another class named <code>NSBlock</code>. What about this class? Does it implement any methods? Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn &apos;NSBlock\ &apos;</pre>
+<p>Notice the backslash and space at the end. This ensures there are no other classes that will match this query — remember, without it, a different class could be returned that <i>contains</i> the name <code>NSBlock</code>. A few more methods will be spat out. One of them, <code><em>invoke</em></code>, looks incredibly interesting:
+</p><pre class="code-block">Address: CoreFoundation[0x000000000018fd80] (CoreFoundation.__TEXT.__text + 1629760)
+        Summary: CoreFoundation`-[NSBlock invoke]    </pre>
+<p>You’re now going to try to invoke this method on the block. However, you don’t want the block to disappear when the references that are retaining this block release their control, thus lowering the <code>retainCount</code>, and potentially deallocating the block.
+</p>
+<p>There’s a simple way to hold onto this block — just <code><em>retain</em></code> it! Type the following into LLDB, replacing the address with the address of your block:
+</p><pre class="code-block">(lldb) po id $block = (id)0x0000618000070200
+(lldb) po [$block retain]
+(lldb) po [$block invoke]</pre>
+<p>For the final line, you’ll see the following output:
+</p><pre class="code-block">Appending new signal: SIGIO
+ nil</pre>
+<p>This shows you the block has been invoked again! Pretty neat!
+</p>
+<p>It only worked because everything was already set up in the right way for the block to be invoked, since you’re currently paused right at the start of the block.
+</p>
+<p>This type of methodology for exploring both public and private classes, and then exploring what methods they implement, is a great way to learn what goes on underneath the covers of a program. You’ll later use the same process of discovery for methods and then analyze the assembly these methods execute, giving you a very close approximation of the source code of the original method.
+</p>
+<h3 class="segment-chapter">Private debugging methods</h3>
+
+<p>The <code>image lookup</code> command does a beautiful job of searching for private methods as well the public methods you’ve seen throughout your Apple development career. However, there are some hidden methods which are quite useful when debugging your own code.
+</p>
+<p>For example, a method beginning with <code>_</code> usually denotes itself as being a private (and potentially important!) method.
+</p>
+<p>Let’s try to search for any Objective-C methods in all of the modules that begin with the underscore character and contain the word “description” in it.
+</p>
+<p>Build and run the project again. When your breakpoint in <code>sharedHandler</code> is hit, type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn (?i)\ _\w+description\]</pre>
+<p>This regular expression is a bit complex so let’s break it down.
+</p>
+<p>The expression searches for a space (<code>\</code>) followed by an underscore (<code>_</code>). Next, the expression searches for one or more alphanumeric or underscore characters (<code>\w+</code>) followed by the word <code>description</code>, followed by the <code>]</code> character.
+</p>
+<p>The beginning of the regular expression has an interesting set of characters, <code>(?i)</code>. This states you want this to be a case insensitive search.
+</p>
+<p>This regular expression has backslashes prepending characters. This means you want the literal character, instead of its regular expression meaning. It’s called “escaping”. For example, in a regular expression, the <code>]</code> character has meaning, so to match the literal “]” character, you need to use <code>\]</code>.
+</p>
+<p>The exception to this in the regular expression above is the <code>\w</code> character. This is a special search item returning an alphanumeric character or an underscore (i.e. _, a-z, A-Z, 0-9).
+</p>
+<p>If you had the deer in the headlights expression when reading this line of code, it’s strongly recommended to carefully scan <a href="https://docs.python.org/2/library/re.html">https://docs.python.org/2/library/re.html</a> to brush up on your regular expression queries; it’s only going to get more complicated from here on out.
+</p>
+<p>Carefully scan through the output of <code>image lookup</code>. It’s often this tedious scanning that gives you the best answers, so please make sure you go through all the output.
+</p>
+<p>You’ll notice a slew of interesting methods belonging to an <code>NSObject</code> category named <code><em>IvarDescription</em></code> belonging in UIKit.
+</p>
+<p>Redo the search so only contents in this category get printed out. Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn NSObject\(IvarDescription\)</pre>
+<p>The console will dump out all the methods this category implements. Of the group of methods, there are a couple very interesting methods that stand out:
+</p><pre class="code-block">_ivarDescription
+_propertyDescription
+_methodDescription
+_shortMethodDescription</pre>
+<p>Since this category is on <code>NSObject</code>, any subclass of <code>NSObject</code> can use these methods. This is pretty much everything, of course!
+</p>
+<p>Execute the <code>_ivarDescription</code> on the <code>UIApplication</code> Objective-C class. Type the following into LLDB:
+</p><pre class="code-block">(lldb) po [[UIApplication sharedApplication] _ivarDescription]</pre>
+<p>You’ll get a slew of output since <code>UIApplication</code> holds many instance variables behind the scenes. Scan carefully and find something that interests you. Don’t come back to reading this until you find something of interest. This is important.
+</p>
+<p>After carefully scanning the output, you can see a reference to the private class <code>UIStatusBar</code>. Which Objective-C setter methods does <code>UIStatusBar</code> have, I hear you ask? Let’s find out! Type the following into LLDB:
+</p><pre class="code-block">(lldb) image lookup -rn &apos;\[UIStatusBar\ set&apos;</pre>
+<p>This dumps all the setter methods available to <code>UIStatusBar</code>. In addition to the declared and overriden methods available in <code>UIStatusBar</code>, you have access to all the methods available to its parent class. Check to see if the <code>UIStatusBar</code> is a subclass of the <code>UIView</code> class
+</p><pre class="code-block">(lldb) po (BOOL)[[UIStatusBar class] isSubclassOfClass:[UIView class]]</pre>
+<p>Alternatively, you can repeatedly use the <code>superclass</code> method to jump up the class hierarchy. As you can see, it looks like this class is a subclass of UIView, so the <code>backgroundColor</code> property is available to you in this class. Let’s play with it.
+</p>
+<p>First, type the following into LLDB:
+</p><pre class="code-block">(lldb) po [[UIApplication sharedApplication] statusBar]</pre>
+<p>You’ll see something similar to the following:
+</p><pre class="code-block">&lt;UIStatusBar_Modern: 0x7fdcf3c0f090; frame = (0 0; 375 44); autoresize = W+BM; layer = &lt;CALayer: 0x60c000036640&gt;&gt;</pre>
+<p>This prints out the <code>UIStatusBar</code> instance for your app. Next, using the address of the status bar, type the following into LLDB:
+</p><pre class="code-block">(lldb) po [0x7fdcf3c0f090 setBackgroundColor:[UIColor purpleColor]]</pre>
+<p>In LLDB, remove any of the previous breakpoints you created.
+</p><pre class="code-block">(lldb) breakpoint delete</pre>
+<p>Continue the app and see the beauty you’ve unleashed upon the world through your fingertips!
+</p><div class="image-30"><img src="graphics/img26.png"  alt="" title="" /></div>
+<p>Not the prettiest of apps now, but at least you’ve managed to inspect a private method and used it to do something fun!
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>As a challenge, try figuring out a pattern using <code>image lookup</code> to find all Swift closures within the Signals module. Once you do that, create a breakpoint on every Swift closure within the Signals module. If that’s too easy, try looking at code that can stop on <em>didSet</em>/<em>willSet</em> property helpers, or do/try/catch blocks.
+</p>
+<p>Also, try looking for more private methods hidden away in Foundation and UIKit. Have fun!
+</p>
+<p>Need another challenge? Using the private UIKit NSObject category method <code>_shortMethodDescription</code> as well as your <code>image lookup -rn</code> commad, search for the class that&apos;s responsible for displaying time in the upper left corner of the status bar and change it to something more amusing. Start with dumping the ivars in the UIApplicationDelegate and maybe find like a window or something that relates to the status bar. Drill into subviews and see if you can find it using the tools given so far.
+</p><div class="image-30"><img src="graphics/img27.png"  alt="" title="" /></div></body></html>

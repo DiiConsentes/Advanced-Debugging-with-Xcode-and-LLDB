@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Appendix B: Python Environment Setup</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Appendix B Python Environment Setup</h1>
+
+<p>It’s not my place to force an IDE on you for Python development. However, if you’re actively looking for a Python editor for the Python related chapters — then we should have a little chat.
+</p>
+<h2 class="segment-chapter">Getting Python</h2>
+
+<p>Good news: if you have a Mac, it automatically ships (at the time of writing) with Python version 2.7. This is the same version LLDB uses.
+</p>
+<p>If, for some weird reason, you like to <code>rm</code> random things in Terminal and you need to reinstall Python, you can download Python here: <a href="https://www.python.org/downloads/">https://www.python.org/downloads/</a>. Make sure to download the version of Python that matches the version packaged with LLDB. If you’re not sure which version to get, you can get the LLDB Python version through Terminal:
+</p><pre class="code-block">lldb
+(lldb) script import sys; <span class="hljs-built_in">print</span> sys.version</pre>
+<p>Don’t worry about the final part of the version number. If you have 2.7.12 and LLDB quotes 2.7.10, that will work just fine.
+</p>
+<h2 class="segment-chapter">Python text editors</h2>
+
+<p>A list of Python editors can be found here: <a href="https://wiki.python.org/moin/PythonEditors">https://wiki.python.org/moin/PythonEditors</a>.
+</p>
+<p>For the small, quick Python scripts you’ll write in this book, I would recommend using <em>Sublime Text</em>. Sublime Text can be found at <a href="https://www.sublimetext.com/">https://www.sublimetext.com/</a>; although it’s a paid application, it’s free to try with no time limit.
+</p><div class="image-90"><img src="graphics/img178.png"  alt="" title="" /></div>
+<p>Both this book, as well as all my LLDB Python scripts, were written (and debugged) through Sublime Text 3.
+</p>
+<p>You’ll likely want to install a couple of additional components to Sublime Text to make developing and debugging LLDB Python scripts easier.
+</p>
+<p>The easiest way to install these additional components is to use the Sublime Text Package Control, which is an excellent package manager for Sublime Text. You can find instructions on how to install the Package Control at <a href="https://packagecontrol.io/installation">https://packagecontrol.io/installation</a>;
+</p>
+<p>Once installed, you’ll be able to easily search for new components designed for Sublime Text by pressing <em>⌘ + Shift + P</em> and typing <em>install</em>. A selection item of <em>Package Control: Install Package</em> will appear. Select this option.
+</p><div class="image-90"><img src="graphics/img179.png"  alt="" title="" /></div>
+<p>After the package manager has been installed, you can search for packages that will help you in Python development. Here’s a few packages I would recommend using if you’re developing in Python:
+</p>
+<ul>
+<li>
+<p><em>AutoPep8</em>: Automatically formats Python code to conform to the PEP 8 style guide using <code>autopep8</code> and <code>pep8</code> modules. <a href="https://packagecontrol.io/packages/AutoPEP8">https://packagecontrol.io/packages/AutoPEP8</a>
+</p></li>
+
+<li>
+<p><em>PythonBreakpoints</em>: A Sublime Text plugin to quickly set Python breakpoints by injecting the <code>set_trace()</code> call of <code>pdb</code> or another debugger of your choice. <a href="https://packagecontrol.io/packages/Python%20Breakpoints">https://packagecontrol.io/packages/Python%20Breakpoints</a>
+</p></li>
+
+<li>
+<p><em>Anaconda</em>: Anaconda turns your Sublime Text 3 into a fully featured Python development IDE including autocompletion, code linting, <code>autopep8</code> formatting, <code>McCabe</code> complexity checker <code>Vagrant</code> and <code>Docker</code> support for Sublime Text 3 using <code>Jedi</code>, <code>PyFlakes</code>, <code>pep8</code>, <code>MyPy</code>, <code>PyLint</code>, <code>pep257</code> — and <code>McCabe</code> will never freeze your Sublime Text 3. <a href="https://packagecontrol.io/packages/Anaconda">https://packagecontrol.io/packages/Anaconda</a>
+</p></li>
+</ul>
+<div class="image-90"><img src="graphics/img180.png"  alt="" title="" /></div>
+<h2 class="segment-chapter">Working with the LLDB Python module</h2>
+
+<p>When working with Python, you’ll often import modules to execute code or classes within that module. When working with LLDB’s Python module, you’ll sometimes come across an <code>import lldb</code> somewhere in the script, usually right at the top.
+</p>
+<p>By default, Xcode will launch a version of Python that’s bundled within Xcode. When Xcode launches this bundled version of Python, the path to where the lldb module is located is set up automatically. However, in your normal Python development, you won’t have access to this module if you were to execute your script through Sublime Text. As a result, you’ll need to modify your <code><em>PYTHONPATH</em></code> environment variable to include the appropriate directory where the lldb Python module lives.
+</p>
+<p>In Terminal, ensure your <code><em>~/.bash_profile</em></code> exists:
+</p><pre class="code-block">touch ~/.bash_profile</pre>
+<p>Open <code>.bash_profile</code> file in your favorite text editor (like Sublime!) and add the following line of code:
+</p><pre class="code-block"><span class="hljs-built_in">export</span> PYTHONPATH=/Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Versions/A/Resources/Python:<span class="hljs-variable">$PYTHONPATH</span></pre>
+<div class="note">
+<p><em>Note</em>: This assumes your Xcode is located at <code>/Applications/Xcode.app</code>. If it isn’t, because you particularly like being different, then you’ll need to change the path.
+</p></div>
+
+<p>Save and close the file. You’ll be able to access the lldb module from any Python session on your computer.
+</p>
+<p>Doing this gives you the advantage of checking for syntax errors in Sublime Text (or equivalent) during debugging time — instead of finding a syntax error when your script is loaded into LLDB.
+</p></body></html>

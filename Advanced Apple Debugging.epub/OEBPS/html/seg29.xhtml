@@ -1,0 +1,530 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <link rel="stylesheet" type="text/css" href="dbg.css"/>
+  <title>Chapter 19: Script Bridging Classes and Hierarchy</title>
+</head>
+<body class="segment-chapter">
+
+<!-- metadata: nil  -->
+
+
+<h1 class="segment-chapter">Chapter 19: Script Bridging Classes and Hierarchy</h1>
+
+<p>You’ve learned the essentials of working with LLDB’s Python module, as well as how to correct any errors using Python’s pdb debugging module. In addition, you’ve explored <code>expression</code>’s <code>--debug</code> option to manually pause and explore JIT code that&apos;s being executed in-process. Now you’ll explore the main players within the lldb Python module for a good overview of the essential classes.
+</p>
+<p>You’ll be building a more complex LLDB Python script as you learn about these classes. You’ll create a regex breakpoint that only stops after the scope in which the breakpoint hit has finished executing. This is useful when exploring initialization and accessor-type methods, and you want to examine the object that&apos;s being returned after the function executes.
+</p>
+<p>In this chapter, you’ll learn how to create the functionality behind this script while learning about the major classes within the LLDB module. You’ll continue on with this script in the next chapter by exploring how to add optional arguments to tweak the script based on your debugging needs.
+</p>
+<h2 class="segment-chapter">The essential classes</h2>
+
+<p>Within the lldb module, there are several important classes:
+</p>
+<ul>
+<li>
+<p><code><em>lldb.SBDebugger</em></code>: The “bottleneck” class you’ll use to access instances of other classes inside your custom debugging script.
+</p>
+<p>There will always be one reference to an instance of this class passed in as a function parameter to your script. This class is responsible for handling input commands into LLDB, and can control where and how it displays the output.
+</p></li>
+
+<li>
+<p><code><em>lldb.SBTarget</em></code>: Responsible for the executable being debugged in memory, the debug files, and the physical file for the executable resident on disk.
+</p>
+<p>In a typical debugging session, you’ll use the instance of <code>SBDebugger</code> to get the selected <code>SBTarget</code>. From there, you’ll be able to access the majority of other classes through <code>SBTarget</code>.
+</p></li>
+
+<li>
+<p><code><em>lldb.SBProcess</em></code>: <code>SBTarget</code> has a to-many relationship to <code>SBProcess</code>: <code>SBTarget</code> manages one or more <code>SBProcess</code> instances. <code>SBProcess</code> handles memory access (reading/writing) as well as the multiple threads within the process.
+</p></li>
+
+<li>
+<p><code><em>lldb.SBThread</em></code>: Manages the stack frames (<code>SBFrames</code>) within that particular thread, and also manages control logic for stepping.
+</p></li>
+
+<li>
+<p><code><em>lldb.SBFrame</em></code>: Manages local variables (given through debugging information) as well as any registers frozen at that particular frame.
+</p></li>
+
+<li>
+<p><code><em>lldb.SBModule</em></code>: Represents a particular executable. You’ve learned about modules when exploring dynamic libraries; a module can include the main executable or any dynamically loaded code (like the Foundation framework).
+</p>
+<p>You can obtain a complete list of the modules loaded into your executable using the <code>image list</code> command.
+</p></li>
+
+<li>
+<p><code><em>lldb.SBFunction</em></code>: This represents a generic function — the code — that is loaded into memory. This class has a one-to-one relationship with the <code>SBFrame</code> class.
+</p></li>
+</ul>
+
+<p>Got it? No? Don’t worry about it! Once you see how these classes interact with each other, you’ll have a better understanding of their place inside your program.
+</p><div class="image-90"><img src="graphics/img99.png"  alt="" title="" /></div>
+<p>This diagram is a <i>simplified</i> version of how the major LLDB Python classes interact with each other. If there’s no direct path from one class to another, you can still get to a class by accessing other variables, not shown in the diagram, that point to an instance (or all instances) of a class (many of which are not shown in the diagram).
+</p>
+<p>That being said, the entry-point into the majority of these objects will be through an instance of <code>SBDebugger</code>, passed in as an instance variable called <code>debugger</code> in your scripts. From there, you’ll likely go after the <code>SBTarget</code> through <code>GetSelectedTarget()</code> to access all the other instances.
+</p>
+<h3 class="segment-chapter">Exploring the lldb module through... LLDB</h3>
+
+<p>Since you’ll be incrementally building a reasonably complex script over the next two chapters, you&apos;ll need a way to conveniently reload your LLDB script without having to stop, rerun and attach to a process. You&apos;ll create an alias for reloading the <code>~/.lldbinit</code> script while running LLDB.
+</p>
+<p>Append the following to your <code>~/.lldbinit</code> file:
+</p><pre class="code-block">command alias reload_script command source ~/.lldbinit</pre>
+<p>This adds a command called <code>reload_script</code> which reloads the <code>~/.lldbinit</code> file. Now whenever you save your work, you can simply reload the updated contents without having to restart LLDB and the process it&apos;s attached to.
+</p>
+<p>In addition, this is a useful command to ensure everything inside your <code>~/.lldbinit</code> file is still valid. Typically, errors in your <code>~/.lldbinit</code> will go unnoticed since LLDB doesn’t have access to your stderr when it’s starting up. However, reloading while LLDB is alive and active will dump any syntax errors in your scripts right to the LLDB console.
+</p>
+<p>While you’re building out this new script, you’ll create a one-time-use burner project to explore these LLDB Python APIs. To mix things up, you’ll create a <em>tvOS</em> project this time.
+</p>
+<p>Open Xcode. Select <em>File</em><em>\</em><em>New</em><em>\</em><em>Project...</em> . Choose <em>tvOS</em><em>\</em><em>Single View Application</em>. Call this new project <em>Meh</em> (because I am out of creative names to use!). Make sure the language is set to <em>Swift</em>. Then save the project wherever you want.
+</p>
+<p>Once the project has been created, open <em>ViewController.swift</em> and add a GUI breakpoint to the beginning of <code>viewDidLoad()</code>.
+</p>
+<p>Build, run and wait for the breakpoint to be triggered. Jump over to the LLDB console.
+</p><div class="image-90"><img src="graphics/img100.png"  alt="" title="" /></div>
+<p>Next, type the following into LLDB:
+</p><pre class="code-block">(lldb) script lldb.debugger</pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block">&lt;lldb.SBDebugger; proxy of &lt;Swig Object of type &apos;lldb::SBDebugger *&apos; at 0x113f2f990&gt; &gt;</pre>
+<p>LLDB has a few easily accessible global variables that map to some of the classes described above:
+</p>
+<ul>
+<li>
+<p><code>lldb.SBDebugger</code> -&gt; <code>lldb.debugger</code>
+</p></li>
+
+<li>
+<p><code>lldb.SBTarget</code> -&gt; <code>lldb.target</code>
+</p></li>
+
+<li>
+<p><code>lldb.SBProcess</code> -&gt; <code>lldb.process</code>
+</p></li>
+
+<li>
+<p><code>lldb.SBThread</code> -&gt; <code>lldb.thread</code>
+</p></li>
+
+<li>
+<p><code>lldb.SBFrame</code> -&gt; <code>lldb.frame</code>
+</p></li>
+</ul>
+
+<p>You’ve just explored the global variable <code>lldb.debugger</code>. Now it’s time to explore the other variables.
+</p>
+<p>Type the following into LLDB:
+</p><pre class="code-block">(lldb) script lldb.target</pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block">&lt;lldb.<span class="hljs-type">SBTarget</span>; proxy of &lt;<span class="hljs-type">Swig</span> <span class="hljs-type">Object</span> of type 'lldb::<span class="hljs-type">SBTarget</span> *' at <span class="hljs-number">0x1142daae0</span>&gt; &gt;</pre>
+<p>This probably doesn’t mean much to you at the moment because it’s only displaying the instance of the class, and not the context of what it does, nor what it represents.
+</p>
+<p>This is why the <code>print</code> command might be more useful when you’re starting to explore these classes.
+</p><pre class="code-block">(lldb) script print lldb.target</pre>
+<p>This will give you some intelligible output to provide some context:
+</p><pre class="code-block">Meh</pre>
+<p>Using the <code>print</code> command is a useful trick when you want to get a summary of an instance, just as calling <code>po</code> on an object gives you an <code>NSObject</code>’s <code>description</code> method in Objective-C. If you didn’t use the <code>print</code> command, you’d have to hone in on properties and attributes of <code>SBTarget</code> to figure out the name of the target.
+</p>
+<div class="note">
+<p><em>Note</em>: It’s fine that you’re playing with global Python variables in one-line scripts. However, it’s important you don’t use these global variables in your actual Python scripts since you can modify the state (i.e step out of a function), and these global variables will not update until your script has finished.
+</p>
+<p>The correct way to reference these instances is to start from <code>SBDebugger</code>, which is passed into your script function, and drill down to the appropriate variable from there.
+</p></div>
+
+<p>Go through the remainder of the major global variables and print them out. Start with the following:
+</p><pre class="code-block">(lldb) script print lldb.process</pre>
+<p>You’ll get the following:
+</p><pre class="code-block">SBProcess: pid = 47294, state = stopped, threads = 7, executable = Meh</pre>
+<p>This printed out the process being run. As always, your data might differ (<code>pid</code>, <code>state</code>, <code>thread</code> etc...).
+</p>
+<p>Next, type the following into LLDB:
+</p><pre class="code-block">(lldb) script print lldb.thread</pre>
+<p>This time you’ll get something like this:
+</p><pre class="code-block">thread #1: tid = 0x13a921, 0x000000010fc69ab0 Meh`ViewController.viewDidLoad(self=0x00007fa8c5b015f0) -&gt; () at ViewController.swift:13, queue = ’com.apple.main-thread’, stop reason = breakpoint 1.1</pre>
+<p>This has printed out the thread that triggered the breakpoint.
+</p>
+<p>Next, try the frame variable:
+</p><pre class="code-block">(lldb) script print lldb.frame</pre>
+<p>And finally, this one results in:
+</p><pre class="code-block">frame #0: 0x000000010fc69ab0 Meh`ViewController.viewDidLoad(self=0x00007fa8c5b015f0) -&gt; () at ViewController.swift:13</pre>
+<p>This will get you the specific frame where the debugger is paused. You could, of course, access other frames in other threads. These global variables are merely convenience getters for you. I would strongly recommend using these global LLDB variables when you’re playing with and learning about these classes.
+</p>
+<p>Check out <a href="http://lldb.llvm.org/python_reference/index.html">http://lldb.llvm.org/python</a><a href="http://lldb.llvm.org/python_reference/index.html">_</a><a href="http://lldb.llvm.org/python_reference/index.html">reference/index.html</a> to learn about which methods these classes implement.
+</p>
+<p>Alternatively, you can use Python’s <code>help</code> function to get the docstrings for a particular class. For example, if you were in the Xcode debugging console, and you wanted info on the active <code>SBTarget</code>, you could do this:
+</p><pre class="code-block">(lldb) script help(lldb.target)</pre>
+<p>Alternatively, you could go after the actual class instead of the global variable:
+</p><pre class="code-block">(lldb) script help(lldb.SBTarget)</pre>
+<p>Don’t be afraid to ask for help from the <code>help</code> function. I use it all the time when I’m figuring out my plan of attack through the lldb module.
+</p>
+<h2 class="segment-chapter">Learning &amp; finding documentation on script bridging classes</h2>
+
+<p>Learning this stuff isn’t easy. You’re faced with the learning curve of the LLDB Python module, as well as learning Python along the way.
+</p>
+<p>The best way to go about learning these foreign APIs is to start in easy, small steps. This means attaching to a process and using the <code><em>script</em></code> command to explore a class or API. Once you’ve mastered how to use a certain API, it’s fair game to throw it into a custom Python script.
+</p>
+<p>For example, if I stumbled across the <code>SBTarget</code> class and saw the global variable, <code>lldb.target</code>, I would jump to the following website <a href="https://lldb.llvm.org/python_reference/lldb.SBTarget-class.html">https://lldb.llvm.org/python</a><a href="https://lldb.llvm.org/python_reference/lldb.SBTarget-class.html">_</a><a href="https://lldb.llvm.org/python_reference/lldb.SBTarget-class.html">reference/lldb.SBTarget-class.html</a> and use the LLDB <code>script</code> command while exploring the online documentation.
+</p><div class="image-90"><img src="graphics/img101.png"  alt="" title="" /></div>
+<h3 class="segment-chapter">Easy reading</h3>
+
+<p>I frequently find myself scouring the class documentation to see what the different classes can do for me with their APIs. However, doing that in the LLDB Terminal makes my eyes water. I typically jump to the online documentation because I am a sucker for basic Cascading Style Sheet(s) with more colors than just the background color and text color.
+</p>
+<p>In fact, I do this <i>so</i> much, I often use this LLDB command to directly bring up any class I want to explore:
+</p><pre class="code-block">command regex gdocumentation ’s/(.+)/script import os; os.system(&quot;open https:&quot; + unichr(47) + unichr(47) + &quot;lldb.llvm.org&quot; + unichr(47) + &quot;python_reference&quot; + unichr(47) + &quot;lldb.%1-class.html&quot;)/’</pre>
+<p>Stick this command in your <em>~/.lldbinit</em> file. Make sure the above command is only on one line or else this will not work.
+</p>
+<p>This command is called <code><em>gdocumentation</em></code>; it takes a case-sensitive query and opens up the class of interest in your web browser. For example, if I installed this command into my <em>~/.lldbinit</em> file, and I was attached to a process and wanted to explore the online help documentation for <code>SBTarget</code>, I would type the following into LLDB:
+</p><pre class="code-block">(lldb) gdocumentation SBTarget</pre>
+<p>This will direct my web browser to the online documentation of <code>SBTarget</code>. Neat!
+</p>
+<h3 class="segment-chapter">Documentation for the more serious</h3>
+
+<p>If you’re one of those developers who really, really needs to master LLDB’s Python module, or if you have plans to build a commercial product which interacts with LLDB, you&apos;ll need to take a more serious approach for digging through the lldb module APIs and documentation.
+</p>
+<p>Since there’s no search functionality available on <a href="http://lldb.llvm.org/python_reference/">http://lldb.llvm.org/python</a><a href="http://lldb.llvm.org/python_reference/">_</a><a href="http://lldb.llvm.org/python_reference/">reference/</a> (at the time of writing), you need a way to easily search all the classes for a particular query.
+</p>
+<p>A drastic but excellent suggestion is to copy the entire <a href="http://lldb.llvm.org/python_reference/">http://lldb.llvm.org/python</a><a href="http://lldb.llvm.org/python_reference/">_</a><a href="http://lldb.llvm.org/python_reference/">reference/</a> site for offline storage using a tool like <a href="http://www.httrack.com/">http://www.httrack.com/</a>. From there, you can search using Terminal commands.
+</p>
+<p>For example, if I scraped the entire site into <code>~/websites/lldb</code> on my computer and I wanted to search for all classes that had an API that pertained to <code>SBProcess</code>, I would type the following in Terminal:
+</p><pre class="code-block">mdfind SBProcess -onlyin ~/websites/lldb</pre>
+<p>It’s not a bad idea to also go after the LLDB mailing lists found here <a href="http://lists.llvm.org/pipermail/lldb-dev/">http://lists.llvm.org/pipermail/lldb-dev/</a> and grab that website for offline use. There’s are a <i>ton</i> of useful hints and explanations given by the authors of LLDB which are buried in the list’s archives.
+</p>
+<p>One final way to search for content is to use an often overlooked feature of Google to filter queries to a particular website using the <em>site:</em> keyword.
+</p>
+<p>For example, if I wanted to search for all occurrences of <code>SBTarget</code> in LLDB&apos;s mailing archives, I could use the following query with Google:
+</p><pre class="code-block">SBTarget site:http://lists.llvm.org/pipermail/lldb-dev/</pre>
+<p>Fortunately, the next couple of chapters will guide you through most of the important classes, so the above suggestions are only meant for the crazy ones out there.
+</p>
+<h2 class="segment-chapter">Creating the BreakAfterRegex command</h2>
+
+<p>It’s time to create the command you were promised you’d build at the beginning of this chapter!
+</p>
+<p>How would you design a command to stop immediately after a function, print out the return value, then continue? Take a bit of happy thinking time for yourself, and try to figure out how you’d go about creating this script.
+</p>
+<p>I’m serious — stop reading until you’ve given this an honest attempt. I’ll wait.
+</p>
+<p>...
+</p>
+<p>...
+</p>
+<p>...
+</p>
+<p>Good. What did you come up with?
+</p>
+<p>When writing these types of scripts, it’s always good practice to envision what you want to achieve, and work your way back from there.
+</p>
+<p>You’ll name your command script <em>BreakAfterRegex.py</em>. The steps the command needs to take are as follows:
+</p>
+<ul>
+<li>
+<p>First, use LLDB to create a regex breakpoint.
+</p></li>
+
+<li>
+<p>Next, add a breakpoint action to <em>step-out</em> of execution (from Chapter 6, “Thread, Frame &amp; Stepping Around”) until the current frame has finished executing.
+</p></li>
+
+<li>
+<p>Finally, you’ll use your knowledge of registers from Section II to print out the correct register that holds the return value.
+</p></li>
+</ul>
+
+<p>Using your favorite text editor, create <em>BreakAfterRegex.py</em> in your <em>~/lldb</em> directory.
+</p>
+<p>Once the file is created, open it and add the following:
+</p><pre class="code-block"><span class="hljs-keyword">import</span> lldb
+
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">__lldb_init_module</span><span class="hljs-params">(debugger, internal_dict)</span>:</span>
+  debugger.HandleCommand(<span class="hljs-string">'command script add -f BreakAfterRegex.breakAfterRegex bar'</span>)
+
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">breakAfterRegex</span><span class="hljs-params">(debugger, command, result, internal_dict)</span>:</span>
+  <span class="hljs-keyword">print</span> (<span class="hljs-string">"yay. basic script setup with input: {}"</span>.format(command))</pre>
+<p>You should know what this is doing by now — but in case you forgot, <code>__lldb_init_module</code> is a callback function called by LLDB after your script has finished loading into the Python address space.
+</p>
+<p>From there, it references a <code>SBDebugger</code> instance passed in as <code>debugger</code> to execute the following line of code:
+</p><pre class="code-block">command script add -f BreakAfterRegex.breakAfterRegex bar</pre>
+<p>This will add a command named <code>bar</code> which is implemented by <code>breakAfterRegex</code> within the module <code>BreakAfterRegex</code> (named after the file, naturally). If you gave a silly command like <code>wootwoot</code> instead of <code>bar</code>, your LLDB command would be named that instead.
+</p>
+<p>Open your <code>~/.lldbinit</code> file and append the following line:
+</p><pre class="code-block">command script import ~/lldb/BreakAfterRegex.py</pre>
+<p>Save the file. Open Xcode, which should still be paused on <code>viewDidLoad()</code>. In the LLDB console, reload the script using your newly created convenience command:
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>You’ll get a variable amount of output, as LLDB will display all the scripts it’s loading. This will reload the contents in your <code>lldbinit</code> file and make the <code>bar</code> command functional.
+</p>
+<p>Let’s try out the <code>bar</code> command. In LLDB, type the following:
+</p><pre class="code-block">(lldb) bar UIViewController test -a -b</pre><div class="image-90"><img src="graphics/img102.png"  alt="" title="" /></div>
+<p>The output in your new LLDB script will echo back the parameters you’ve supplied to it.
+</p>
+<p>You’ve got the basic skeleton up and working. It’s time to write the code to create a breakpoint based upon your input. You’ll start with creating input designed solely for handling the regular expression.
+</p>
+<p>Head back to <code>BreakAfterRegex.py</code> and find <code>def breakAfterRegex(debugger, command, result, internal_dict):</code>.
+</p>
+<p>Remove the <code>print</code> statement and replace it with the following logic:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">breakAfterRegex</span><span class="hljs-params">(debugger, command, result, internal_dict)</span>:</span>
+  <span class="hljs-comment"># 1</span>
+  target = debugger.GetSelectedTarget()
+  breakpoint = target.BreakpointCreateByRegex(command)
+
+  <span class="hljs-comment"># 2</span>
+  <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> breakpoint.IsValid() <span class="hljs-keyword">or</span> breakpoint.num_locations == <span class="hljs-number">0</span>:
+    result.AppendWarning(
+      <span class="hljs-string">"Breakpoint isn't valid or hasn't found any hits"</span>)
+  <span class="hljs-keyword">else</span>:
+    result.AppendMessage(<span class="hljs-string">"{}"</span>.format(breakpoint))
+
+  <span class="hljs-comment"># 3</span>
+  breakpoint.SetScriptCallbackFunction(
+    <span class="hljs-string">"BreakAfterRegex.breakpointHandler"</span>)</pre>
+<p>Here’s what you’re doing:
+</p>
+<ol>
+<li>
+<p>Create a breakpoint using the regex input from the supplied parameter. The <code>breakpoint</code> object will be of type <code>SBBreakpoint</code>.
+</p></li>
+
+<li>
+<p>If breakpoint creation is unsuccessful, the script will warn you it couldn’t find anything to break on. If successful, the breakpoint object is printed out.
+</p></li>
+</ol>
+
+<ol>
+<li>
+<p>Finally, the breakpoint is set up so the function <code>breakpointHandler</code> is called whenever the breakpoint hits.
+</p></li>
+</ol>
+
+<p>What’s that I hear you say? What’s an <code>SBBreakpoint</code>? Well, you can look it up through LLDB!
+</p><pre class="code-block">(lldb) script help(lldb.SBBreakpoint)</pre>
+<p>If perusing the output in the LLDB console makes your eyes water, a more convenient way to view the documentation can be found here:
+</p>
+<p><a href="https://lldb.llvm.org/python_reference/lldb.SBBreakpoint-class.html">https://lldb.llvm.org/python</a><a href="https://lldb.llvm.org/python_reference/lldb.SBBreakpoint-class.html">_</a><a href="https://lldb.llvm.org/python_reference/lldb.SBBreakpoint-class.html">reference/lldb.SBBreakpoint-class.html</a>.
+</p>
+<p>If you installed the <code>gdocumentation</code> command mentioned earlier, you can simply type the following instead:
+</p><pre class="code-block">(lldb) gdocumentation SBBreakpoint</pre>
+<p>Grabbing the first line of the help documentation indicates an <code>SBBreakpoint</code> class represents a logical breakpoint and its associated settings.
+</p>
+<p>OK — back on the main road after that little sightseeing trip. Where were we? Oh right — you haven’t created the handler function that will be called when the breakpoint is hit. You’ll do that now.a
+</p>
+<p>Right below <code>breakAfterRegex</code>, add the following function:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">breakpointHandler</span><span class="hljs-params">(frame, bp_loc, dict)</span>:</span>
+  function_name = frame.GetFunctionName()
+  print(<span class="hljs-string">"stopped in: {}"</span>.format(function_name))
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">True</span></pre>
+<p>This function is called whenever any of the breakpoints you created using your new command are hit, and will then print out the function name. Notice the return of <code>True</code> at the end of the function. Returning <code>True</code> will result in your program stopping execution. Returning <code>False</code>, or even omitting a <code>return</code> statement will result in the program continuing to run after this method executes.
+</p>
+<p>This is a subtle but important point. When creating callback functions for breakpoints (i.e. the <code>breakpointHandler</code> function you just created), you have a different method signature to implement. This consists of a <code>SBFrame</code>, <code>SBBreakpointLocation</code>, and a Python dictionary.
+</p>
+<p>The <code>SBFrame</code> represents the frame you’ve stopped in. The <code>SBBreakpointLocation</code> is an instance of one of your breakpoints found in <code>SBBreakpoint</code>.
+</p>
+<p>This makes sense because you could have many hits for a single breakpoint, especially if you try to break on a frequently implemented function, such as <code>main</code>, or if you use a well-matched regular expression.
+</p>
+<p>Here’s another diagram that showcases the simplified interaction of classes when you’ve stopped on a particular function:
+</p><div class="image-90"><img src="graphics/img103.png"  alt="" title="" /></div>
+<p>As you (might have?) noticed, <code>SBFrame</code>, and <code>SBBreakpointLocation</code> are your lifelines to the majority of important lldb classes while in your breakpoint callback function. Using the previous diagram, you can get to all the major class instances through <code>SBFrame</code> or through <code>SBFrame</code>’s reference to <code>SBModule</code>.
+</p>
+<p>Remember, you should never use <code>lldb.frame</code> or other global variables inside your scripts since they could hold a stale state while being executed in a script, so you must traverse the variables starting with the <code>frame</code>, or <code>bc_loc</code> to get to the instance of the class you want.
+</p>
+<p>If you accidentally make a typo, or don’t understand some code, simply insert a breakpoint in the script using the Python pdb module and work your way back from there. You learned about the pdb module in Chapter 18, “Debugging Script Bridging”.
+</p>
+<p>This script is starting to get complicated — looks like a good time to reload and test it out. Open the Xcode console window and reload your script:
+</p><pre class="code-block">(lldb) reload_script</pre>
+<p>Go through the motions of executing some commands again to test it out:
+</p><pre class="code-block">(lldb) bar somereallylongmethodthatapplehopefullydidntwritesomewhere</pre>
+<p>You’ll get output similar to the following:
+</p><pre class="code-block">warning: <span class="hljs-type">Breakpoint</span> isn't valid or hasn't found any hits</pre>
+<p>Ok, good. Time to try out an actual breakpoint. Let’s go after a rather frequently executed method.
+</p>
+<p>In the LLDB console type the following:
+</p><pre class="code-block">(lldb) bar NSObject.init\]</pre>
+<p>You’ll see something similar to the following:
+</p><pre class="code-block">SBBreakpoint: id = 3, regex = &apos;NSObject.init\]&apos;, locations = 2</pre>
+<p>Continue execution and use the Simulator remote to click around the tvOS Simulator to trigger the breakpoint. If you’re having trouble tripping the breakpoint, one surefire way is to navigate to the simulator’s home screen. From the Simulator, <em>Hardware</em><em>\</em><em>Home</em> (or more easily, <em>⌘ + Shift + H</em>).
+</p><div class="image-90"><img src="graphics/img104.png"  alt="" title="" /></div>
+<p>Cool. You’ve successfully added a command to create a regex breakpoint! That’s pretty darn neat-o.
+</p>
+<p>Right now, you’ve stopped on one of <code>NSObject</code>’s <code>init</code> methods, which could be a class or an instance method. This is very likely a subclass of <code>NSObject</code>. You’ll manually replicate the actions you’re about to implement in the Python script using LLDB.
+</p>
+<p>Using the LLDB console, finish executing this method:
+</p><pre class="code-block">(lldb) finish</pre>
+<p>Remember your register calling conventions? Since you’re working on the tvOS Simulator and this architecture is x64, you’ll want to use the <code><em>RAX</em></code> register. Print out the return value of <code>NSObject</code>’s <code>init</code> in LLDB.
+</p><pre class="code-block">(lldb) po $rax</pre>
+<p>Depending on where and how you were playing with the Simulator, you’ll see a different object. I received the following output:
+</p><pre class="code-block">&lt;_CFXNotificationNameWildcardObjectRegistration: 0x61000006e8c0&gt;</pre>
+<p>If curiosity gets the better of you, feel free to explore the properties and methods within the class you just stumbled across using the strategies discussed in Chapter 16, “Exploring and Method Swizzling Objective-C Frameworks”.
+</p>
+<p>Stepping out and printing is the exact logic you’ll implement now in your custom script callback function.
+</p>
+<p>Open <em>BreakAfterRegex.py</em> and revisit the <code><em>breakpointHandler</em></code> function. Modify it to look like the following:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">breakpointHandler</span><span class="hljs-params">(frame, bp_loc, dict)</span>:</span>
+  <span class="hljs-comment"># 1</span>
+  <span class="hljs-string">'''The function called when the regular 
+  expression breakpoint gets triggered
+  '''</span>
+
+  <span class="hljs-comment"># 2</span>
+  thread = frame.GetThread()
+  process = thread.GetProcess()
+  debugger = process.GetTarget().GetDebugger()
+
+  <span class="hljs-comment"># 3</span>
+  function_name = frame.GetFunctionName()
+
+  <span class="hljs-comment"># 4</span>
+  debugger.SetAsync(<span class="hljs-keyword">False</span>)
+
+  <span class="hljs-comment"># 5</span>
+  thread.StepOut()
+
+  <span class="hljs-comment"># 6</span>
+  output = evaluateReturnedObject(debugger,
+                                  thread, 
+                                  function_name)
+  <span class="hljs-keyword">if</span> output <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">None</span>:
+    print(output)
+
+  <span class="hljs-keyword">return</span> <span class="hljs-keyword">False</span></pre>
+<p><i>B-B-B-B-B-Breakdown time</i><i>!</i>
+</p>
+<ol>
+<li>
+<p>Yep, if you’re building a full-on Python command script, you’ve got to add some docstrings. You’ll thank yourself later. Trust me.
+</p></li>
+
+<li>
+<p>You’re climbing the hierarchical reference chain to grab the instance of <code>SBDebugger</code> and <code>SBThread</code>. Your starting point is through <code>SBFrame</code>.
+</p></li>
+
+<li>
+<p>This grabs the name of the parent function. Since you’re about to step out of this current <code>SBFrame</code>, it’s about to get invalidated, so grab any stack references you can before the stepping-out occurs.
+</p></li>
+
+<li>
+<p><code>SetAsync</code> is an interesting function to use when tampering with control flow while scripting in a program. The debugger will run asynchronously while executing the program, so you need to tell it to synchronously wait until <code>stepOut</code> completes its execution before handing control back to the Python script.
+</p>
+<p>A good programmer will clean up the state to the async’s previous value, but that becomes a little complicated, as you could run into threading issues when this callback function triggers if multiple breakpoints were to hit this callback function. This is not a noticeable setting change when you’re debugging, so it’s fine to leave it off.
+</p></li>
+
+<li>
+<p>You then step out of the method. After this line executes, you’ll no longer be in the frame you previously stopped in.
+</p></li>
+
+<li>
+<p>You’re calling a soon-to-be implemented method <code><em>evaluateReturnedObject</em></code> that takes the appropriate information and generates an output message. This message will contain the frame you’ve stopped in, the return object, and the frame the breakpoint stepped out to.
+</p></li>
+</ol>
+
+<p>You’re all done with that Python function! Now you need to implement <code>evaluateReturnedObject</code>. Add it below the previous function you just wrote:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">evaluateReturnedObject</span><span class="hljs-params">(debugger, thread, function_name)</span>:</span>
+  <span class="hljs-string">'''Grabs the reference from the return register
+  and returns a string from the evaluated value.
+  TODO ObjC only
+  '''</span>
+
+  <span class="hljs-comment"># 1</span>
+  res = lldb.SBCommandReturnObject()
+  
+  <span class="hljs-comment"># 2</span>
+  interpreter = debugger.GetCommandInterpreter()
+  target = debugger.GetSelectedTarget()
+  frame = thread.GetSelectedFrame()
+  parent_function_name = frame.GetFunctionName()
+
+  <span class="hljs-comment"># 3</span>
+  expression = <span class="hljs-string">'expression -lobjc -O -- {}'</span>.format(
+      getRegisterString(target))
+
+  <span class="hljs-comment"># 4</span>
+  interpreter.HandleCommand(expression, res)
+
+  <span class="hljs-comment"># 5</span>
+  <span class="hljs-keyword">if</span> res.HasResult():
+    <span class="hljs-comment"># 6</span>
+    output = <span class="hljs-string">'{}\nbreakpoint: '</span>\
+      <span class="hljs-string">'{}\nobject: {}\nstopped: {}'</span>.format(
+        <span class="hljs-string">'*'</span> * <span class="hljs-number">80</span>,
+        function_name,
+        res.GetOutput().replace(<span class="hljs-string">'\n'</span>, <span class="hljs-string">''</span>),
+        parent_function_name)
+    <span class="hljs-keyword">return</span> output
+  <span class="hljs-keyword">else</span>:
+    <span class="hljs-comment"># 7</span>
+    <span class="hljs-keyword">return</span> <span class="hljs-keyword">None</span></pre>
+<p>Here’s what that does:
+</p>
+<ol>
+<li>
+<p>You first instantiate a new <code><em>SBCommandReturnObject</em></code>. You’ve seen this class already in your primary functions as the <code>result</code> parameter. However, you’re creating your own here because you’ll use this instance to evaluate and modify an expression. A typical <code>po &quot;something&quot;</code> will produce output, including two newlines, straight to the console. You need to grab this output before it goes to the console and remove those newlines... because you’re fancy like that. In Chapter 21, “Script Bridging with SBValue &amp; Language Contexts”, you’ll explore a cleaner alternative to evaluating code and obtaining output, but for now you’ll make do with your existing knowledge of the <code>SBCommandReturnObject</code> class.
+</p></li>
+
+<li>
+<p>You grab a few variables for use later on.
+</p></li>
+</ol>
+
+<ol>
+<li>
+<p>Here you create the expression to be executed that prints out the return value. The <code><em>getRegisterString</em></code> is yet another unimplemented function you’ll implement in just a moment — I promise this will be the last time I do that to you! This function will return the syntax needed to access the register which holds the return value.
+</p>
+<p>This is required because you can’t know if this script is running on a watchOS, iOS, tvOS, or macOS device, so you’ll need to augment the register name depending upon the architecture. Remember, you also need to use the Objective-C context, since Swift hides the registers from you!
+</p></li>
+
+<li>
+<p>Finally, you execute the expression through the debugger’s command interpreter, <code><em>SBCommandInterpreter</em></code>. This class interprets your commands but allows you to control where the output goes, instead of immediately piping it to stderr or stdout.
+</p></li>
+
+<li>
+<p>Once <code>HandleCommand</code> has executed, the output of the expression should now reside in the <code>SBCommandReturnObject</code> instance. However, it’s good practice to ensure the return object actually has any output to give to you.
+</p></li>
+
+<li>
+<p>If everything worked correctly, you format the old, stepped-out function along with the object and currently stopped function into a string and return that.
+</p></li>
+
+<li>
+<p>However, if there was no input to print from the <code>SBCommandReturnObject</code>, you return <code>None</code>.
+</p></li>
+</ol>
+
+<p>One more method, and then you’re (sort of) done! Implement <code>getRegisterString</code> at the bottom of your Python script:
+</p><pre class="code-block"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">getRegisterString</span><span class="hljs-params">(target)</span>:</span>
+  triple_name = target.GetTriple()
+  <span class="hljs-keyword">if</span> <span class="hljs-string">"x86_64"</span> <span class="hljs-keyword">in</span> triple_name:
+    <span class="hljs-keyword">return</span> <span class="hljs-string">"$rax"</span>
+  <span class="hljs-keyword">elif</span> <span class="hljs-string">"i386"</span> <span class="hljs-keyword">in</span> triple_name: 
+    <span class="hljs-keyword">return</span> <span class="hljs-string">"$eax"</span>
+  <span class="hljs-keyword">elif</span> <span class="hljs-string">"arm64"</span> <span class="hljs-keyword">in</span> triple_name:
+    <span class="hljs-keyword">return</span> <span class="hljs-string">"$x0"</span>
+  <span class="hljs-keyword">elif</span> <span class="hljs-string">"arm"</span> <span class="hljs-keyword">in</span> triple_name:
+    <span class="hljs-keyword">return</span> <span class="hljs-string">"$r0"</span>
+  <span class="hljs-keyword">raise</span> Exception(<span class="hljs-string">'Unknown hardware. Womp womp'</span>)</pre>
+<p>You’re using the <code>SBTarget</code> instance to call <code><em>GetTriple</em></code>, which returns a description of the hardware the executable is designed to run on. Next, you determine which syntax you need to access the register responsible for the return value based on your architecture. If it’s an unknown architecture, then raise an exception.
+</p>
+<p>You’ve done it! Save your work, jump back to Xcode and reload the script with your trusty <code>reload_script</code> command in the LLDB command line.
+</p>
+<p>Next, before you get started with the full-blown command, remove all previous breakpoints like so:
+</p><pre class="code-block">(lldb) br del
+About to delete all breakpoints, do you want to do that?: [Y/n] Y
+All breakpoints removed. (1 breakpoint)</pre>
+<p>It’s time to take this beauty for a spin!
+</p>
+<p>Type the following into LLDB:
+</p><pre class="code-block">(lldb) bar NSObject.init\]</pre>
+<p>This time your script will execute your completed command’s script when it hits the breakpoint.
+</p>
+<p>Do whatever you need to do through the tvOS Simulator to trigger the <code>init</code> breakpoint; closing the application will work (⌘ + Shift + H), as will bringing up the Apple TV Remote (found in the <em>Hardware</em> menu) and tapping on the remote.
+</p>
+<p>Once hit, you’ll get some beautiful output which showcases the method you’ve stopped on (in this case <code>-[NSObject init]</code>), the object that is being created, and the calling method as well.
+</p>
+<p>Since you’ve created a breakpoint on a frequently-called method, you’ll soon hit the same breakpoint again.
+</p><div class="image-90"><img src="graphics/img105.png"  alt="" title="" /></div>
+<p>This is a fun tool to have at your disposal. You could, for instance, create a well-crafted regex breakpoint to trigger each time an <code>NSURL</code> is created within any application... owned by you or not. For example, you could try:
+</p><pre class="code-block">(lldb) bar NSURL(\(\w+\))?\ init</pre>
+<p>The “weird” syntax is needed because a lot of the initialization methods for NSURL are in categories. Alternatively, you could use this script on a problematic getter method of a Core Data object that is returning unusual values.
+</p>
+<h2 class="segment-chapter">Where to go from here?</h2>
+
+<p>You’ve begun your quest to create Python LLDB scripts of real-world complexity. In the next chapter, you’ll take this script even further and add some cool options to customize this script.
+</p>
+<p>But for now, have fun and play around with this <code>bar</code> script! Attach LLDB to some applications running in the simulator and play around with the command. Try the already mentioned <code>NSURL</code> initialization (or <code>NSURLRequest</code> initialization) breakpoints.
+</p>
+<p>Once you get bored of that, see what objects are using Core Data by inspecting the return value of <code>-[NSManagedObject valueForKey:]</code> or check out all the items that are being created from a nib or storyboard by breaking on an <code>initWithCoder:</code> method.
+</p></body></html>
